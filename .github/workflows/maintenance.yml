@@ -1,0 +1,66 @@
+# صيانة يومية:
+#  1) إبقاء مشروع Supabase المجاني نشطاً (يتوقف المشروع المجاني بعد أسبوع دون استخدام)
+#  2) نسخة احتياطية مشفرة لقاعدة البيانات تُحفظ 30 يوماً ضمن Artifacts
+# المتطلبات (Settings ← Secrets and variables ← Actions):
+#  Variables: SUPABASE_URL, SUPABASE_ANON_KEY
+#  Secrets:   SUPABASE_DB_URL (رابط Session pooler), BACKUP_PASSPHRASE (عبارة سر للتشفير)
+name: Daily maintenance
+
+on:
+  schedule:
+    - cron: '17 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    if: ${{ vars.SUPABASE_URL != '' }}
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -sS -o /dev/null -w "REST %{http_code}\n" "${{ vars.SUPABASE_URL }}/rest/v1/departments?select=id&limit=1" \
+            -H "apikey: ${{ vars.SUPABASE_ANON_KEY }}" || true
+          curl -sS -o /dev/null -w "AUTH %{http_code}\n" "${{ vars.SUPABASE_URL }}/auth/v1/health" \
+            -H "apikey: ${{ vars.SUPABASE_ANON_KEY }}" || true
+
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - name: Check configuration
+        id: cfg
+        run: |
+          if [ -z "$DB_URL" ] || [ -z "$PASSPHRASE" ]; then
+            echo "Backup secrets are not configured — skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install PostgreSQL 17 client
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-17
+      - name: Dump and encrypt
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          STAMP=$(date -u +%Y-%m-%d)
+          mkdir backup
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --schema=public --no-owner --no-privileges -Fc -f backup/public.dump
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --table=auth.users --table=auth.identities --data-only --no-owner -Fc -f backup/auth.dump
+          tar czf "exam-backup-$STAMP.tar.gz" backup
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" \
+            --symmetric --cipher-algo AES256 -o "exam-backup-$STAMP.tar.gz.gpg" "exam-backup-$STAMP.tar.gz"
+          rm -rf backup "exam-backup-$STAMP.tar.gz"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: steps.cfg.outputs.enabled == 'true'
+        with:
+          name: exam-backup-${{ env.STAMP }}
+          path: exam-backup-*.gpg
+          retention-days: 30

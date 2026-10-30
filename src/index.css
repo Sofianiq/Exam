@@ -1,0 +1,328 @@
+@import 'tailwindcss';
+@import '@fontsource/ibm-plex-sans-arabic/400.css';
+@import '@fontsource/ibm-plex-sans-arabic/500.css';
+@import '@fontsource/ibm-plex-sans-arabic/600.css';
+@import '@fontsource/ibm-plex-sans-arabic/700.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ===== الألوان: أخضر الكلية الداكن + ذهبي الشعار ===== */
+:root {
+  --bg: #f5f4ef;
+  --surface: #ffffff;
+  --surface-2: #f0eee6;
+  --surface-3: #e8e5da;
+  --border: #e0dccf;
+  --border-strong: #cdc7b5;
+  --text: #17201b;
+  --muted: #5d685f;
+  --faint: #8a938c;
+
+  --primary: #0b5a3a;
+  --primary-hover: #094a30;
+  --primary-soft: #e4f0ea;
+  --primary-text: #0b5a3a;
+  --on-primary: #ffffff;
+
+  --gold: #b7882a;
+  --gold-soft: #f6edd8;
+  --gold-text: #8a6417;
+
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --warning: #a35b06;
+  --warning-soft: #fdf1df;
+  --success: #08754a;
+  --success-soft: #e3f4ea;
+  --info: #1f4fae;
+  --info-soft: #e7eefb;
+
+  --sidebar-from: #0a4430;
+  --sidebar-to: #0d5a3d;
+  --ring: #0b5a3a55;
+  --shadow: 0 1px 2px rgb(23 32 27 / 0.06), 0 2px 8px rgb(23 32 27 / 0.05);
+  --shadow-lg: 0 10px 30px rgb(23 32 27 / 0.16);
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0d1310;
+  --surface: #141c18;
+  --surface-2: #19231e;
+  --surface-3: #212d27;
+  --border: #27342d;
+  --border-strong: #3a4a41;
+  --text: #e6ece8;
+  --muted: #a1ada5;
+  --faint: #76837b;
+
+  --primary: #1f8a5c;
+  --primary-hover: #26a06b;
+  --primary-soft: #16301f;
+  --primary-text: #5fcf98;
+  --on-primary: #ffffff;
+
+  --gold: #d6ad55;
+  --gold-soft: #2c2412;
+  --gold-text: #e3c072;
+
+  --danger: #f0776c;
+  --danger-soft: #3a1714;
+  --warning: #f2a54a;
+  --warning-soft: #33230d;
+  --success: #4fcf8f;
+  --success-soft: #11291c;
+  --info: #7fa6f5;
+  --info-soft: #152240;
+
+  --sidebar-from: #08251a;
+  --sidebar-to: #0b3323;
+  --ring: #5fcf9855;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: 'IBM Plex Sans Arabic', system-ui, 'Segoe UI', Tahoma, sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-text: var(--primary-text);
+  --color-on-primary: var(--on-primary);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-gold-text: var(--gold-text);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-lg);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    font-feature-settings: 'tnum' 1;
+  }
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+  ::selection {
+    background: var(--gold-soft);
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-line rounded-xl shadow-card;
+  }
+  .field {
+    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-faint transition;
+  }
+  .field:focus {
+    @apply outline-none border-primary;
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  .field:disabled {
+    @apply bg-surface-2 text-muted cursor-not-allowed;
+  }
+  select.field {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238a938c' stroke-width='2'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: left 0.6rem center;
+    background-size: 1rem;
+    padding-left: 2rem;
+  }
+  select.field option {
+    background: var(--surface);
+    color: var(--text);
+  }
+  .label {
+    @apply block text-sm font-medium text-ink mb-1.5;
+  }
+  .table-base {
+    @apply w-full text-sm border-collapse;
+  }
+  .table-base th {
+    @apply bg-surface-2 text-muted font-semibold text-xs px-3 py-2.5 text-start border-b border-line whitespace-nowrap;
+  }
+  .table-base td {
+    @apply px-3 py-2.5 border-b border-line align-middle;
+  }
+  .table-base tbody tr:hover td {
+    @apply bg-surface-2/60;
+  }
+}
+
+/* ===== جدول إدخال الدرجات ===== */
+.grade-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.grade-grid th,
+.grade-grid td {
+  border-bottom: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
+}
+.grade-grid thead th {
+  position: sticky;
+  z-index: 2;
+  background: var(--surface-2);
+}
+.grade-grid thead tr:first-child th {
+  top: 0;
+}
+.grade-grid thead tr:nth-child(2) th {
+  top: var(--head-row-1, 38px);
+}
+.grade-grid .sticky-col {
+  position: sticky;
+  z-index: 1;
+  background: var(--surface);
+}
+.grade-grid thead .sticky-col {
+  z-index: 3;
+  background: var(--surface-2);
+}
+.grade-grid .cell-input {
+  width: 100%;
+  min-width: 3.5rem;
+  height: 34px;
+  text-align: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.grade-grid .cell-input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  background: var(--primary-soft);
+}
+.grade-grid .cell-input:disabled {
+  color: var(--text);
+  cursor: default;
+}
+.grade-grid td.cell-error {
+  background: var(--danger-soft);
+}
+.grade-grid td.cell-error .cell-input {
+  color: var(--danger);
+  font-weight: 600;
+}
+.grade-grid td.cell-missing {
+  background: var(--warning-soft);
+}
+.grade-grid td.cell-dirty {
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+.grade-grid tbody tr:hover td {
+  background-color: color-mix(in srgb, var(--primary-soft) 45%, transparent);
+}
+.grade-grid tbody tr:hover td.sticky-col {
+  background-color: color-mix(in srgb, var(--primary-soft) 45%, var(--surface));
+}
+
+/* ===== الطباعة ===== */
+.print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 9mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .print-landscape {
+    page: landscape;
+  }
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10.5pt;
+  }
+  .print-table th,
+  .print-table td {
+    border: 1px solid #333;
+    padding: 3px 5px;
+    text-align: center;
+  }
+  .print-table th {
+    background: #e9efe9 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .print-table td {
+    white-space: nowrap;
+  }
+  .print-table td.name {
+    text-align: right;
+  }
+  .print-table tr {
+    break-inside: avoid;
+  }
+  .print-fail {
+    color: #b42318 !important;
+    font-weight: 700;
+  }
+}
+
+@page landscape {
+  size: A4 landscape;
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+}
+
+@keyframes toast-in {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-toast {
+  animation: toast-in 0.18s ease-out;
+}
