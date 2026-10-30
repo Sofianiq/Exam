@@ -218,6 +218,21 @@ select t.ok((select teacher_ids = '{}' from public.subjects where id = :'s1'), '
 :as_asst
 select t.expect_error(format($$select public.delete_account(%L)$$, :'t3_id'), '%مدير النظام والعميد%');
 
+-- ===== حماية إضافية حتى لو مُنحت صلاحية التنفيذ خطأً (مثلاً بعد استعادة نسخة احتياطية) =====
+reset role;
+grant execute on function public._create_user(text, text, text, text, uuid, text) to authenticated;
+grant execute on function public.write_audit(text, text, text, uuid, text, jsonb) to authenticated;
+:as_anshead
+select t.expect_error($$select public._create_user('intruder', 'secret123', 'مستخدم دخيل', 'admin', null, null)$$, '%صلاحية%');
+select t.expect_error($$select public.write_audit('grade.update', 'grade', null, null, 'سجل مزيف', null)$$, '%permission denied%');
+select public.create_account('ans05', 'secret123', 'تدريسي عبر الواجهة', 'teacher');
+reset role;
+revoke execute on function public._create_user(text, text, text, text, uuid, text) from authenticated;
+revoke execute on function public.write_audit(text, text, text, uuid, text, jsonb) from authenticated;
+select t.ok((select count(*) = 0 from auth.users where email = 'intruder@exam.local'), 'no intruder account');
+select t.ok((select count(*) = 0 from public.audit_log where summary = 'سجل مزيف'), 'no forged audit entry');
+select t.ok((select department_id from public.profiles where username = 'ans05') = :'ans', 'legit account via RPC still works');
+
 -- ===== المستخدم المجهول =====
 reset role;
 set role anon;

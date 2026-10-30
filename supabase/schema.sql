@@ -238,10 +238,12 @@ $$;
 -- 4) سجل العمليات
 -- ---------------------------------------------------------------------
 
+-- تعمل بصلاحيات المستدعي: تُستدعى فقط من داخل دوال النظام الموثوقة والقوادح،
+-- ولا يستطيع أي مستخدم كتابة سجل مزيف مباشرة لأنه لا يملك صلاحية الإضافة على audit_log
 create or replace function public.write_audit(
   p_action text, p_entity text, p_entity_id text, p_department_id uuid, p_summary text, p_details jsonb
 ) returns void
-language plpgsql security definer set search_path = '' as $$
+language plpgsql security invoker set search_path = '' as $$
 begin
   insert into public.audit_log (user_id, user_name, action, entity, entity_id, department_id, summary, details)
   values (auth.uid(),
@@ -726,6 +728,12 @@ declare
   v_username text := lower(trim(p_username));
   v_email text;
 begin
+  -- حماية إضافية: عند الاستدعاء عبر واجهة الـ API يجب أن يملك المستخدم صلاحية إنشاء هذا الدور
+  -- (حتى لو مُنحت صلاحية التنفيذ خطأً، مثلاً بعد استعادة نسخة احتياطية)
+  if (session_user = 'authenticator' or coalesce(current_setting('request.jwt.claims', true), '') <> '')
+     and not public.can_manage_role(p_role, p_department_id) then
+    raise exception 'ليست لديك صلاحية إنشاء هذا النوع من الحسابات' using errcode = '42501';
+  end if;
   if v_username !~ '^[a-z0-9][a-z0-9._-]{2,31}$' then
     raise exception 'اسم المستخدم يجب أن يتكون من 3 إلى 32 حرفاً إنجليزياً أو رقماً (يسمح بـ . _ -)' using errcode = '22023';
   end if;

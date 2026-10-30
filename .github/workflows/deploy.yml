@@ -27,11 +27,15 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Build
-        run: npm run build
         env:
-          # تُضبط من: Settings ← Secrets and variables ← Actions ← Variables
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          # تُضبط من: Settings ← Secrets and variables ← Actions (تبويب Variables أو Secrets)
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::warning title=Demo mode::SUPABASE_URL or SUPABASE_ANON_KEY is not set, so the site is built in demo mode with fake local data. Add both under Settings > Secrets and variables > Actions, then run this workflow again."
+          fi
+          npm run build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

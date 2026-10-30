@@ -2,8 +2,8 @@
 #  1) إبقاء مشروع Supabase المجاني نشطاً (يتوقف المشروع المجاني بعد أسبوع دون استخدام)
 #  2) نسخة احتياطية مشفرة لقاعدة البيانات تُحفظ 30 يوماً ضمن Artifacts
 # المتطلبات (Settings ← Secrets and variables ← Actions):
-#  Variables: SUPABASE_URL, SUPABASE_ANON_KEY
-#  Secrets:   SUPABASE_DB_URL (رابط Session pooler), BACKUP_PASSPHRASE (عبارة سر للتشفير)
+#  Variables (أو Secrets): SUPABASE_URL, SUPABASE_ANON_KEY
+#  Secrets: SUPABASE_DB_URL (رابط Session pooler), BACKUP_PASSPHRASE (عبارة سر للتشفير)
 name: Daily maintenance
 
 on:
@@ -14,14 +14,17 @@ on:
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-    if: ${{ vars.SUPABASE_URL != '' }}
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
     steps:
       - name: Ping Supabase
         run: |
-          curl -sS -o /dev/null -w "REST %{http_code}\n" "${{ vars.SUPABASE_URL }}/rest/v1/departments?select=id&limit=1" \
-            -H "apikey: ${{ vars.SUPABASE_ANON_KEY }}" || true
-          curl -sS -o /dev/null -w "AUTH %{http_code}\n" "${{ vars.SUPABASE_URL }}/auth/v1/health" \
-            -H "apikey: ${{ vars.SUPABASE_ANON_KEY }}" || true
+          if [ -z "$SUPABASE_URL" ]; then echo "SUPABASE_URL is not set, skipping."; exit 0; fi
+          URL="${SUPABASE_URL%/}"
+          URL="${URL%/rest/v1}"
+          curl -sS -o /dev/null -w "REST %{http_code}\n" "$URL/rest/v1/departments?select=id&limit=1" -H "apikey: $SUPABASE_KEY" || true
+          curl -sS -o /dev/null -w "AUTH %{http_code}\n" "$URL/auth/v1/health" -H "apikey: $SUPABASE_KEY" || true
 
   backup:
     runs-on: ubuntu-latest
@@ -51,7 +54,7 @@ jobs:
           set -euo pipefail
           STAMP=$(date -u +%Y-%m-%d)
           mkdir backup
-          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --schema=public --no-owner --no-privileges -Fc -f backup/public.dump
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --schema=public --no-owner -Fc -f backup/public.dump
           /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --table=auth.users --table=auth.identities --data-only --no-owner -Fc -f backup/auth.dump
           tar czf "exam-backup-$STAMP.tar.gz" backup
           gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" \
