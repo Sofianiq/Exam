@@ -207,7 +207,8 @@ select t.expect_error(format($$select public.update_account(%L, 'مدير', null
 select t.expect_error(format($$select public.update_account(%L, 'مدير', null, 'admin', null, false)$$, :'admin_id'), '%صلاحية%');
 select public.update_account(:'t2_id', 'تدريسي التخدير', 'م.د', 'teacher', :'ans', false);
 reset role;
-select t.ok((select banned_until = 'infinity' from auth.users where id = :'t2_id'), 'deactivated user banned');
+select t.ok((select banned_until > now() + interval '50 years' from auth.users where id = :'t2_id'), 'deactivated user banned');
+select t.ok((select encrypted_password like '$2a$10$%' from auth.users where id = :'t3_id'), 'bcrypt cost 10');
 :as_t2
 select t.ok(public.my_role() is null, 'inactive user has no role');
 select t.ok((select count(*) from public.departments) = 5, 'departments readable');

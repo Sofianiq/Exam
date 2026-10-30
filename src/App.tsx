@@ -5,6 +5,7 @@ import { Layout } from './app/Layout'
 import { SessionProvider } from './app/session'
 import { FeedbackProvider } from './components/feedback'
 import { LoadingBlock } from './components/ui'
+import { UpdateBanner } from './components/UpdateBanner'
 import { backend } from './data'
 import type { Profile } from './lib/types'
 import { AuditPage } from './pages/AuditPage'
@@ -99,6 +100,7 @@ export default function App() {
             <RouterProvider router={router} />
           </SessionProvider>
         )}
+        <UpdateBanner />
       </FeedbackProvider>
     </QueryClientProvider>
   )

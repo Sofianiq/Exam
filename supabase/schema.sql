@@ -754,7 +754,7 @@ begin
     email_change_token_current, phone_change, phone_change_token, reauthentication_token
   ) values (
     '00000000-0000-0000-0000-000000000000', v_uid, 'authenticated', 'authenticated', v_email,
-    extensions.crypt(p_password, extensions.gen_salt('bf')), now(),
+    extensions.crypt(p_password, extensions.gen_salt('bf', 10)), now(),
     '{"provider":"email","providers":["email"]}'::jsonb,
     jsonb_build_object('full_name', trim(p_full_name)), now(), now(),
     '', '', '', '', '', '', '', ''
@@ -834,7 +834,7 @@ begin
     title = nullif(trim(coalesce(p_title, '')), ''),
     role = p_role, department_id = v_dept, active = p_active
   where id = p_user_id;
-  update auth.users set banned_until = case when p_active then null else 'infinity'::timestamptz end,
+  update auth.users set banned_until = case when p_active then null else now() + interval '100 years' end,
                         updated_at = now()
   where id = p_user_id;
   perform public.write_audit('user.update', 'profile', p_user_id::text, coalesce(v_dept, v_old.department_id),
@@ -856,7 +856,7 @@ begin
   if length(coalesce(p_password, '')) < 6 then
     raise exception 'كلمة المرور يجب أن لا تقل عن 6 أحرف' using errcode = '22023';
   end if;
-  update auth.users set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')), updated_at = now()
+  update auth.users set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf', 10)), updated_at = now()
   where id = p_user_id;
   update public.profiles set must_change_password = true where id = p_user_id;
   perform public.write_audit('user.reset_password', 'profile', p_user_id::text, v_p.department_id,
@@ -894,7 +894,7 @@ begin
                  and encrypted_password = extensions.crypt(p_current, encrypted_password)) then
     raise exception 'كلمة المرور الحالية غير صحيحة' using errcode = '28P01';
   end if;
-  update auth.users set encrypted_password = extensions.crypt(p_new, extensions.gen_salt('bf')), updated_at = now()
+  update auth.users set encrypted_password = extensions.crypt(p_new, extensions.gen_salt('bf', 10)), updated_at = now()
   where id = auth.uid();
   update public.profiles set must_change_password = false where id = auth.uid();
   perform public.write_audit('user.change_password', 'profile', auth.uid()::text, public.my_department(),

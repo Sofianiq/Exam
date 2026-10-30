@@ -207,7 +207,7 @@ export class SupabaseBackend implements Backend {
 
   // ---------- الحسابات ----------
   async listProfiles(): Promise<Profile[]> {
-    return fetchAll<Profile>((a, b) => this.sb.from('profiles').select('*').order('full_name').range(a, b))
+    return fetchAll<Profile>((a, b) => this.sb.from('profiles').select('*').order('full_name').order('id').range(a, b))
   }
 
   async createAccount(a: AccountInput): Promise<string> {
@@ -251,6 +251,7 @@ export class SupabaseBackend implements Backend {
         .eq('stage', k.stage)
         .eq('shift', k.shift)
         .order('seq')
+        .order('id')
         .range(a, b),
     )
   }
@@ -288,7 +289,7 @@ export class SupabaseBackend implements Backend {
       if (f.shift) q = q.eq('shift', f.shift)
       if (f.term) q = q.eq('term', f.term)
       if (f.teacher_id) q = q.contains('teacher_ids', [f.teacher_id])
-      return q.order('term').order('sort').order('name').range(a, b)
+      return q.order('term').order('sort').order('name').order('id').range(a, b)
     }).then((rows) => rows.map(normalizeSubject))
   }
 
@@ -368,8 +369,12 @@ export class SupabaseBackend implements Backend {
 
   async exportSnapshot(): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = { exported_at: new Date().toISOString(), source: 'supabase' }
-    for (const t of SNAPSHOT_TABLES) {
-      out[t] = await fetchAll<unknown>((a, b) => this.sb.from(t).select('*').range(a, b))
+    for (const [t, keys] of SNAPSHOT_TABLES) {
+      out[t] = await fetchAll<unknown>((a, b) => {
+        let q = this.sb.from(t).select('*')
+        for (const k of keys) q = q.order(k)
+        return q.range(a, b)
+      })
     }
     await this.logEvent('backup.export', 'تصدير نسخة احتياطية كاملة')
     return out
@@ -384,7 +389,16 @@ export class SupabaseBackend implements Backend {
   }
 }
 
-const SNAPSHOT_TABLES = ['settings', 'departments', 'academic_years', 'profiles', 'students', 'subjects', 'grades'] as const
+// كل جدول مع مفتاح ترتيب ثابت حتى لا تتكرر أو تُفقد صفوف عند الجلب على دفعات
+const SNAPSHOT_TABLES: [string, string[]][] = [
+  ['settings', ['id']],
+  ['departments', ['id']],
+  ['academic_years', ['id']],
+  ['profiles', ['id']],
+  ['students', ['id']],
+  ['subjects', ['id']],
+  ['grades', ['subject_id', 'student_id']],
+]
 
 const num = (v: unknown) => (v == null ? null : Number(v))
 

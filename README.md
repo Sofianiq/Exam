@@ -70,7 +70,8 @@ npm run dev
    select public.create_first_admin('admin', 'كلمة-مرور-قوية-هنا', 'مدير النظام');
    ```
 4. **مهم للأمان:** من **Authentication ← Sign In / Providers** أوقف خيار **Allow new users to sign up**، لأن الحسابات تُنشأ من داخل التطبيق فقط.
-5. من **Project Settings ← API** انسخ قيمتي **Project URL** و **anon public key**.
+5. **مهم داخل الكلية:** إذا كان التدريسيون يدخلون من شبكة إنترنت واحدة (نفس عنوان IP) فارفع حد تسجيل الدخول من **Authentication ← Rate Limits ← Sign-ups and sign-ins** (الافتراضي 30 محاولة كل 5 دقائق لكل عنوان) إلى 200 مثلاً، حتى لا يُمنع الدخول في أوقات الذروة.
+6. من **Project Settings ← API** انسخ قيمتي **Project URL** و **anon public key**.
 
 ### 2) ربط التطبيق ونشره على GitHub Pages
 1. في المستودع على GitHub: **Settings ← Secrets and variables ← Actions ← Variables ← New repository variable**، وأضف:
