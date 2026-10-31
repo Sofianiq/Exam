@@ -313,6 +313,53 @@ delete from public.announcements where id = :'an2';
 reset role;
 select t.ok((select count(*) from public.audit_log where action like 'announcement.%') >= 4, 'announcements audited');
 
+-- ===== التدريسي في أكثر من قسم =====
+:as_anshead
+select public.set_teacher_departments(:'t1_id', array[:'ans']::uuid[]);
+select t.ok((select :'ans' = any (extra_department_ids) from public.profiles where id = :'t1_id'), 'head links a teacher from another department');
+select t.expect_error(format($$select public.set_teacher_departments(%L, array[%L]::uuid[])$$, :'t2_id', :'rad'), '%صلاحية%');
+select public.set_teacher_departments(:'t1_id', '{}');
+select t.ok((select cardinality(extra_department_ids) = 0 from public.profiles where id = :'t1_id'), 'head unlinks the teacher');
+insert into public.subjects (year_id, department_id, stage, shift, term, name, teacher_ids)
+values (:'y', :'ans', 1, 'morning', 1, 'مادة مشتركة', array[:'t1_id']::uuid[]) returning id as sx \gset
+select t.ok((select :'ans' = any (extra_department_ids) from public.profiles where id = :'t1_id'), 'assigning a subject links the teacher to its department');
+insert into public.announcements (title, department_id, audience) values ('إعلان التخدير', :'ans', 'teachers');
+:as_t1
+select t.ok((select count(*) from public.announcements where title = 'إعلان التخدير') = 1, 'linked teacher receives the department announcements');
+select t.ok((select count(*) from public.subjects where id = :'sx') = 1, 'teacher sees the subject in the other department');
+select t.expect_error(format($$select public.set_teacher_departments(%L, '{}')$$, :'t1_id'), '%صلاحية%');
+:as_admin
+select public.set_teacher_departments(:'t1_id', array[:'ans', :'rad']::uuid[]);
+select t.ok((select extra_department_ids = array[:'ans']::uuid[] from public.profiles where id = :'t1_id'), 'home department is never duplicated');
+select t.ok((select count(*) >= 2 from public.audit_log where action = 'user.departments'), 'department links audited');
+
+-- ===== التحقق من النتيجة برمز QR =====
+:as_radhead
+insert into public.subjects (year_id, department_id, stage, shift, term, name, teacher_ids, coursework_max, cw_practical_max, practical_max)
+values (:'y', :'rad', 2, 'morning', 1, 'مادة غير معتمدة', array[:'t1_id']::uuid[], 30, 0, 0) returning id as su \gset
+:as_t1
+select public.save_grades(:'su', format('[{"student_id":"%s","cw_theory":25,"final_theory":60}]', :'st1')::jsonb);
+reset role;
+select verify_code as vc from public.students where id = :'st1' \gset
+select t.ok(length(:'vc') = 16, 'every student has a 16-character verification code');
+set role anon;
+select t.ok((public.verify_result(:'vc') -> 'student' ->> 'full_name') is not null, 'anyone can verify a result by its code');
+select t.ok((select (x ->> 'total')::numeric = 64 and (x ->> 'passed')::boolean = false
+             from jsonb_array_elements(public.verify_result(:'vc') -> 'subjects') x where x ->> 'name' = 'مادة وزارية'),
+            'verification shows the approved (ministerial) result');
+select t.ok((select x ->> 'total' is null and x ->> 'passed' is null and not (x ->> 'approved')::boolean
+             from jsonb_array_elements(public.verify_result(:'vc') -> 'subjects') x where x ->> 'name' = 'مادة غير معتمدة'),
+            'unapproved subjects reveal no grades');
+select t.ok((select x ->> 'r2_total' is null from jsonb_array_elements(public.verify_result(:'vc') -> 'subjects') x
+             where x ->> 'name' = 'مادة وزارية'), 'unapproved second round reveals nothing');
+select t.ok(public.verify_result('0000000000000000') is null, 'unknown code returns nothing');
+select t.ok(public.verify_result(lower(:'vc')) is not null, 'verification code is case-insensitive');
+select t.expect_error($$select count(*) from public.students$$, '%permission denied%');
+:as_radhead
+update public.students set verify_code = 'AAAAAAAAAAAAAAAA' where id = :'st1';
+reset role;
+select t.ok((select verify_code from public.students where id = :'st1') = :'vc', 'verification code cannot be changed');
+
 -- ===== كلمات المرور =====
 :as_t1
 select t.expect_error($$select public.change_my_password('wrong', 'abcdef1')$$, '%غير صحيحة%');

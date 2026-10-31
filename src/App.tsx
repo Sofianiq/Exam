@@ -21,11 +21,13 @@ import { MySubjectsPage } from './pages/MySubjectsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { ProgressPage } from './pages/ProgressPage'
 import { ResultsBatchPage } from './pages/ResultsBatchPage'
+import { ResultsPage } from './pages/ResultsPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { StudentPage } from './pages/StudentPage'
 import { StudentsSearchPage } from './pages/StudentsSearchPage'
 import { UsersPage } from './pages/UsersPage'
+import { VerifyPage } from './pages/VerifyPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -49,6 +51,7 @@ const router = createHashRouter([
       { path: 'student/:studentId', element: <StudentPage /> },
       { path: 'subjects/:subjectId', element: <GradeSheetPage /> },
       { path: 'review', element: <ReviewPage /> },
+      { path: 'results', element: <ResultsPage /> },
       { path: 'announcements', element: <AnnouncementsPage /> },
       { path: 'progress', element: <ProgressPage /> },
       { path: 'control', element: <ControlPage /> },
@@ -62,8 +65,17 @@ const router = createHashRouter([
 
 type AuthState = { status: 'loading' } | { status: 'out'; notice?: string | null } | { status: 'in'; profile: Profile }
 
+// صفحة التحقق من النتيجة عامة (يفتحها رمز QR المطبوع) ولا تتطلب تسجيل الدخول
+const verifyCodeOf = (hash: string) => /^#\/verify\/([0-9A-Za-z-]{8,40})\/?$/.exec(hash)?.[1] ?? null
+
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' })
+  const [verifyCode, setVerifyCode] = useState(() => verifyCodeOf(window.location.hash))
+  useEffect(() => {
+    const onHash = () => setVerifyCode(verifyCodeOf(window.location.hash))
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   useEffect(() => {
     backend
@@ -77,6 +89,14 @@ export default function App() {
     setAuth({ status: 'out', notice })
   }, [])
   const setProfile = useCallback((p: Profile) => setAuth({ status: 'in', profile: p }), [])
+
+  if (verifyCode) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <VerifyPage code={verifyCode} />
+      </QueryClientProvider>
+    )
+  }
 
   return (
     <QueryClientProvider client={queryClient}>

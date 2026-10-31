@@ -16,6 +16,10 @@ export const canSeeAudit = (p: Who | null | undefined) => canViewAll(p) || p?.ro
 export const canManageDepartment = (p: Who | null | undefined, departmentId: string) =>
   isSuper(p) || (p?.role === 'head' && p.department_id === departmentId)
 
+/** هل يرتبط المستخدم بالقسم (قسمه الأساسي أو قسم إضافي يدرّس فيه) */
+export const belongsTo = (p: Pick<Profile, 'department_id' | 'extra_department_ids'> | null | undefined, departmentId: string | null | undefined) =>
+  !!p && !!departmentId && (p.department_id === departmentId || (p.extra_department_ids ?? []).includes(departmentId))
+
 export const canSeeDepartment = (p: Who | null | undefined, departmentId: string) =>
   canViewAll(p) || (p?.role === 'head' && p.department_id === departmentId)
 

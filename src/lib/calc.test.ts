@@ -19,6 +19,8 @@ const settings: Settings = {
   average_mode: 'simple',
   idle_minutes: 60,
   hide_grades_when_closed: true,
+  dean_name: null,
+  committee_head_name: null,
   current_year_id: null,
   second_round_cap: null,
   max_failed_subjects: 2,

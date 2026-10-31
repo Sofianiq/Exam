@@ -52,6 +52,8 @@ function GeneralSettings() {
         second_round_cap: form.second_round_cap == null || Number.isNaN(form.second_round_cap) ? null : Number(form.second_round_cap),
         max_failed_subjects: Number(form.max_failed_subjects),
         hide_grades_when_closed: form.hide_grades_when_closed,
+        dean_name: form.dean_name?.trim() || null,
+        committee_head_name: form.committee_head_name?.trim() || null,
         grade_scale: scale.map((b) => ({ min: Number(b.min), label: b.label.trim() })),
       })
       await qc.invalidateQueries({ queryKey: ['settings'] })
@@ -83,6 +85,14 @@ function GeneralSettings() {
           <Field label="اسم الكلية">
             <Input value={form.college_name} onChange={(e) => set('college_name', e.target.value)} />
           </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="اسم عميد الكلية (مع اللقب)" hint="يُطبع أسفل النتيجة مكان توقيع العميد">
+              <Input value={form.dean_name ?? ''} placeholder="مثال: أ.د. ..." onChange={(e) => set('dean_name', e.target.value)} />
+            </Field>
+            <Field label="اسم رئيس اللجنة الامتحانية" hint="يُطبع أسفل النتيجة مكان توقيع اللجنة">
+              <Input value={form.committee_head_name ?? ''} placeholder="مثال: م.د. ..." onChange={(e) => set('committee_head_name', e.target.value)} />
+            </Field>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="درجة النجاح">
               <Input type="number" min={0} max={100} dir="ltr" className="text-center" value={form.pass_mark} onChange={(e) => set('pass_mark', Number(e.target.value))} />

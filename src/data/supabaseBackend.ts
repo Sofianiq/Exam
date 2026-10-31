@@ -23,6 +23,7 @@ import type {
   SubjectProgress,
   SubjectStatus,
   Term,
+  VerifiedResult,
 } from '../lib/types'
 import { AppError, type Backend, type StudentPatch, type SubjectFilter } from './backend'
 
@@ -125,6 +126,7 @@ export class SupabaseBackend implements Backend {
     const res = await this.sb.from('profiles').select('*').eq('id', uid).maybeSingle()
     if (res.error) throw translateError(res.error)
     const p = res.data as Profile | null
+    if (p) p.extra_department_ids ??= []
     if (!p || !p.active) {
       await this.sb.auth.signOut()
       return null
@@ -141,6 +143,7 @@ export class SupabaseBackend implements Backend {
     }
     const res = await this.sb.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
     const p = res.data as Profile | null
+    if (p) p.extra_department_ids ??= []
     if (res.error || !p || !p.active) {
       await this.sb.auth.signOut()
       throw new AppError('الحساب غير مفعل. راجع إدارة النظام.')
@@ -222,7 +225,8 @@ export class SupabaseBackend implements Backend {
 
   // ---------- الحسابات ----------
   async listProfiles(): Promise<Profile[]> {
-    return fetchAll<Profile>((a, b) => this.sb.from('profiles').select('*').order('full_name').order('id').range(a, b))
+    const rows = await fetchAll<Profile>((a, b) => this.sb.from('profiles').select('*').order('full_name').order('id').range(a, b))
+    return rows.map((p) => ({ ...p, extra_department_ids: p.extra_department_ids ?? [] }))
   }
 
   async createAccount(a: AccountInput): Promise<string> {
@@ -412,6 +416,22 @@ export class SupabaseBackend implements Backend {
   async deleteCurriculum(id: string): Promise<void> {
     const rows = must(await this.sb.from('curriculum').delete().eq('id', id).select('id'))
     if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
+  }
+
+  async setTeacherDepartments(userId: string, departmentIds: string[]): Promise<void> {
+    await this.rpc('set_teacher_departments', { p_user_id: userId, p_department_ids: departmentIds })
+  }
+
+  async verifyResult(code: string): Promise<VerifiedResult | null> {
+    const data = await this.rpc<VerifiedResult | null>('verify_result', { p_code: code })
+    if (!data) return null
+    const r = data
+    const n = (v: unknown) => (v == null ? null : Number(v))
+    return {
+      ...r,
+      settings: { ...r.settings, pass_mark: Number(r.settings.pass_mark) },
+      subjects: r.subjects.map((x) => ({ ...x, units: n(x.units), total: n(x.total), r2_total: n(x.r2_total) })),
+    }
   }
 
   // ---------- الإعلانات ----------

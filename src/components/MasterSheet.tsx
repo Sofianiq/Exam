@@ -104,7 +104,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
     }
   }
 
-  const resultsLink = `/class/${classKey.department_id}/${classKey.stage}/${classKey.shift}/results?term=${term}`
+  const resultsLink = `/results?dept=${classKey.department_id}&stage=${classKey.stage}&shift=${classKey.shift}&term=${term}`
 
   return (
     <>

@@ -30,6 +30,8 @@ export interface Profile {
   title: string | null
   role: Role
   department_id: string | null
+  /** أقسام أخرى يدرّس فيها التدريسي (غير قسمه الأساسي) */
+  extra_department_ids: string[]
   active: boolean
   must_change_password: boolean
   created_at: string
@@ -56,6 +58,9 @@ export interface Settings {
   max_failed_subjects: number
   /** حجب الدرجات عن التدريسيين عند غلق الإدخال */
   hide_grades_when_closed: boolean
+  /** أسماء الموقعين على النتيجة الرسمية */
+  dean_name: string | null
+  committee_head_name: string | null
 }
 
 /** صف دراسي: سنة + قسم + مرحلة + دراسة */
@@ -72,6 +77,8 @@ export interface Student extends ClassKey {
   full_name: string
   status: StudentStatus
   notes: string | null
+  /** رمز التحقق من النتيجة (يُطبع مع رمز QR) */
+  verify_code: string
 }
 
 export interface Subject extends ClassKey {
@@ -246,3 +253,28 @@ export interface Announcement {
 }
 
 export type AnnouncementInput = Pick<Announcement, 'title' | 'body' | 'level' | 'department_id' | 'audience' | 'pinned' | 'expires_at'> & { id?: string }
+
+/** بيانات التحقق من نتيجة طالب (عبر رمز QR) — تُعاد للمواد المعتمدة فقط */
+export interface VerifiedSubject {
+  name: string
+  term: Term
+  units: number | null
+  ministerial: boolean
+  approved: boolean
+  special: SpecialCode | null
+  total: number | null
+  passed: boolean | null
+  r2_approved: boolean
+  r2_special: SpecialCode | null
+  r2_total: number | null
+  r2_passed: boolean | null
+}
+
+export interface VerifiedResult {
+  code: string
+  student: Pick<Student, 'full_name' | 'stage' | 'shift' | 'status' | 'seq'>
+  department: { name: string; head_name: string | null } | null
+  year: string | null
+  settings: Pick<Settings, 'university_name' | 'college_name' | 'pass_mark' | 'grade_scale' | 'average_mode' | 'max_failed_subjects'>
+  subjects: VerifiedSubject[]
+}

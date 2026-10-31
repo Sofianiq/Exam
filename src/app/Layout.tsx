@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import {
+  Award,
   BookOpenCheck,
   Building2,
   ClipboardCheck,
@@ -28,9 +29,10 @@ import { useConfirm, useToast } from '../components/feedback'
 import { Badge, IconButton, Select, cx } from '../components/ui'
 import { backend, isDemo } from '../data'
 import { displayName, yearLabel } from '../lib/format'
-import { ROLE_LABEL } from '../lib/labels'
+import { ROLE_LABEL, SHIFT_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canEditSettings, canManageUsers, canReview, canSeeAudit, canToggleEntry, canViewAll } from '../lib/perm'
 import { isActive, useAnnouncements, useSeenAnnouncements } from './announcements'
+import { useSubjects } from './queries'
 import { useInstallPrompt, useTheme } from './hooks'
 import { useSession } from './session'
 
@@ -67,6 +69,7 @@ export function Layout() {
   if (profile.role === 'head' && profile.department_id)
     items.push({ to: `/departments/${profile.department_id}`, label: 'قسمي', icon: <Building2 className="size-4.5" /> })
   if (canSeeAudit(profile)) items.push({ to: '/students', label: 'البحث عن طالب', icon: <UserSearch className="size-4.5" /> })
+  if (canSeeAudit(profile)) items.push({ to: '/results', label: 'النتائج', icon: <Award className="size-4.5" /> })
   if (canReview(profile)) items.push({ to: '/review', label: 'التدقيق والاعتماد', icon: <ClipboardCheck className="size-4.5" />, badge: pendingReview })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/progress', label: 'تقرير الإنجاز', icon: <FileBarChart2 className="size-4.5" /> })
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })
@@ -75,7 +78,7 @@ export function Layout() {
   if (canEditSettings(profile)) items.push({ to: '/settings', label: 'الإعدادات', icon: <SettingsIcon className="size-4.5" /> })
 
   return (
-    <div className="min-h-dvh lg:ps-68">
+    <div className="app-shell min-h-dvh lg:ps-68">
       {/* الشريط الجانبي */}
       <aside
         className={cx(
@@ -117,6 +120,7 @@ export function Layout() {
               )}
             </NavLink>
           ))}
+          <TeachingNav />
         </nav>
         <div className="border-t border-white/10 px-4 py-3 text-[0.7rem] leading-relaxed text-white/55">
           {s.settings.university_name}
@@ -138,6 +142,56 @@ export function Layout() {
         <Outlet />
       </main>
       <ChangePasswordDialog open={pwOpen} forced={profile.must_change_password} onClose={() => setPwOpen(false)} />
+    </div>
+  )
+}
+
+/** أقسام التدريسي وموادّه في السنة الحالية (قد تكون في أكثر من قسم) */
+function TeachingNav() {
+  const s = useSession()
+  const { profile } = s
+  const teaches = profile.role === 'teacher' || profile.role === 'head'
+  const q = useSubjects({ year_id: s.yearId, teacher_id: profile.id }, teaches)
+  const subjects = q.data ?? []
+  if (!teaches || (profile.role === 'head' && subjects.length === 0)) return null
+  const deptIds = [...new Set([...(profile.role === 'teacher' ? [profile.department_id, ...profile.extra_department_ids] : []), ...subjects.map((x) => x.department_id)])].filter(
+    (d): d is string => !!d && !!s.deptById(d),
+  )
+  if (deptIds.length === 0) return null
+  return (
+    <div className="mt-4 border-t border-white/10 pt-3" data-teaching-nav>
+      <div className="px-3 pb-1.5 text-[0.68rem] font-semibold text-white/50">{profile.role === 'head' ? 'موادي التدريسية' : 'أقسامي وموادي'}</div>
+      {deptIds.map((d) => {
+        const list = subjects
+          .filter((x) => x.department_id === d)
+          .sort((a, b) => a.stage - b.stage || a.shift.localeCompare(b.shift) || a.term - b.term || a.sort - b.sort)
+        return (
+          <div key={d} className="mb-2">
+            <div className="flex items-center gap-2 px-3 py-1.5 text-[0.78rem] font-semibold text-[var(--gold)]">
+              <Building2 className="size-3.5 shrink-0" />
+              <span className="truncate">قسم {s.deptById(d)?.name}</span>
+            </div>
+            {list.length === 0 ? (
+              <div className="px-3 py-1 ps-8 text-[0.7rem] text-white/45">لا مواد مسندة في هذه السنة</div>
+            ) : (
+              list.map((x) => (
+                <NavLink
+                  key={x.id}
+                  to={`/subjects/${x.id}`}
+                  className={({ isActive }) =>
+                    cx('block rounded-md px-3 py-1.5 ps-8 text-[0.8rem] leading-snug transition', isActive ? 'bg-white/12 text-white' : 'text-white/70 hover:bg-white/7 hover:text-white')
+                  }
+                >
+                  <span className="block truncate">{x.name}</span>
+                  <span className="block text-[0.65rem] text-white/45">
+                    {stageShort(x.stage)} · {SHIFT_LABEL[x.shift]} · {TERM_LABEL[x.term]}
+                  </span>
+                </NavLink>
+              ))
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
