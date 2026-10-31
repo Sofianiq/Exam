@@ -1,10 +1,11 @@
-import { BookOpen, Copy, Pencil, Plus, Trash2 } from 'lucide-react'
+import { BookMarked, BookOpen, Copy, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useInvalidate, useProgress, useSubjects } from '../app/queries'
+import { useCurriculum, useInvalidate, useProgress, useSubjects } from '../app/queries'
 import { useSession } from '../app/session'
 import { backend } from '../data'
-import { displayName } from '../lib/format'
+import { schemeForPlan } from '../lib/calc'
+import { displayName, unitsLabel } from '../lib/format'
 import { SHIFT_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { canManageDepartment } from '../lib/perm'
 import type { ClassKey, Shift, Subject, Term } from '../lib/types'
@@ -23,6 +24,7 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
   const [editing, setEditing] = useState<Subject | null>(null)
   const [dlg, setDlg] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
   const manage = canManageDepartment(s.profile, classKey.department_id)
   const list = subjectsQ.data ?? []
 
@@ -56,6 +58,9 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
         </div>
         {manage && (
           <div className="flex flex-wrap gap-2">
+            <Button size="sm" icon={<BookMarked className="size-4" />} onClick={() => setPlanOpen(true)}>
+              استيراد من الخطة الدراسية
+            </Button>
             <Button size="sm" icon={<Copy className="size-4" />} onClick={() => setCopyOpen(true)}>
               نسخ مواد
             </Button>
@@ -81,9 +86,14 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
           title={`لا توجد مواد في ${TERM_LABEL[term]}`}
           action={
             manage && (
-              <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setDlg(true)}>
-                إضافة أول مادة
-              </Button>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="primary" icon={<BookMarked className="size-4" />} onClick={() => setPlanOpen(true)}>
+                  استيراد من الخطة الدراسية
+                </Button>
+                <Button icon={<Plus className="size-4" />} onClick={() => setDlg(true)}>
+                  إضافة مادة يدوياً
+                </Button>
+              </div>
             )
           }
         >
@@ -116,7 +126,7 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
                       <Link to={`/subjects/${x.id}`} className="font-semibold text-primary-text hover:underline">
                         {x.name}
                       </Link>
-                      {x.units != null && <span className="ms-2 text-xs text-muted">({x.units} وحدات)</span>}
+                      {x.units != null && <span className="ms-2 text-xs text-muted">({unitsLabel(x.units)})</span>}
                     </td>
                     <td className="text-sm">
                       {x.teacher_ids.length ? x.teacher_ids.map((id) => displayName(s.profileById(id))).join(' + ') : <span className="text-warning">غير محدد</span>}
@@ -173,6 +183,7 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
         onSaved={() => void invalidate()}
       />
       <CopySubjectsDialog open={copyOpen} onClose={() => setCopyOpen(false)} target={{ ...classKey, term }} />
+      <ImportPlanDialog key={term} open={planOpen} onClose={() => setPlanOpen(false)} target={{ ...classKey, term }} existing={list.map((x) => x.name)} nextSort={(list[list.length - 1]?.sort ?? 0) + 1} />
     </Card>
   )
 }
@@ -258,6 +269,117 @@ function CopySubjectsDialog({ open, onClose, target }: { open: boolean; onClose:
         <Checkbox checked={withTeachers} onChange={setWithTeachers} label="نسخ التدريسيين المسندين أيضاً" />
         {same && <p className="text-xs text-danger">اختر صفاً مختلفاً عن الصف الحالي.</p>}
       </div>
+    </Modal>
+  )
+}
+
+function ImportPlanDialog({
+  open,
+  onClose,
+  target,
+  existing,
+  nextSort,
+}: {
+  open: boolean
+  onClose: () => void
+  target: ClassKey & { term: Term }
+  existing: string[]
+  nextSort: number
+}) {
+  const s = useSession()
+  const toast = useToast()
+  const invalidate = useInvalidate()
+  const planQ = useCurriculum(open ? target.department_id : undefined)
+  const items = (planQ.data ?? []).filter((c) => c.stage === target.stage && c.term === target.term)
+  const have = new Set(existing)
+  const [picked, setPicked] = useState<Set<string> | null>(null)
+  const selected = picked ?? new Set(items.filter((c) => !have.has(c.name)).map((c) => c.id))
+  const [busy, setBusy] = useState(false)
+  const dept = s.deptById(target.department_id)
+
+  const run = async () => {
+    setBusy(true)
+    let sort = nextSort
+    let n = 0
+    try {
+      for (const c of items) {
+        if (!selected.has(c.id) || have.has(c.name)) continue
+        const sc = schemeForPlan(c)
+        await backend.saveSubject({
+          ...target,
+          name: c.name,
+          code: null,
+          units: c.units,
+          teacher_ids: [],
+          coursework_max: sc.coursework_max,
+          cw_practical_max: sc.cw_practical_max,
+          practical_max: sc.practical_max,
+          sort: sort++,
+        })
+        n++
+      }
+      toast.success(`تمت إضافة ${n} مادة من الخطة الدراسية — حدّد التدريسي لكل مادة`)
+      setPicked(null)
+      void invalidate()
+      onClose()
+    } catch (e) {
+      toast.error(e)
+      void invalidate()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="lg"
+      title={`استيراد المواد من الخطة الدراسية — ${stageLabel(target.stage)} / ${TERM_LABEL[target.term]}`}
+      footer={
+        <>
+          <Button onClick={onClose}>إلغاء</Button>
+          <Button variant="primary" loading={busy} disabled={selected.size === 0} onClick={run}>
+            إضافة {selected.size || ''} مادة
+          </Button>
+        </>
+      }
+    >
+      {planQ.isLoading ? (
+        <LoadingBlock />
+      ) : items.length === 0 ? (
+        <EmptyState icon={<BookMarked className="size-6" />} title="لا توجد مواد في الخطة الدراسية لهذه المرحلة والفصل">
+          أضف المواد أولاً من صفحة «الخطة الدراسية» لقسم {dept?.name}.
+        </EmptyState>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-muted">تُضاف المواد مع وحداتها وتوزيع الدرجة المناسب (مادة فيها عملي ← 40/25/35، نظري فقط ← 30/70). يمكن تعديل أي مادة بعد الإضافة.</p>
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {items.map((c) => {
+              const exists = have.has(c.name)
+              return (
+                <li key={c.id} className="flex items-center gap-3 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-[var(--primary)]"
+                    disabled={exists}
+                    checked={!exists && selected.has(c.id)}
+                    onChange={(e) => {
+                      const next = new Set(selected)
+                      if (e.target.checked) next.add(c.id)
+                      else next.delete(c.id)
+                      setPicked(next)
+                    }}
+                  />
+                  <span className="flex-1 text-sm font-medium">{c.name}</span>
+                  <span className="text-xs text-muted">{unitsLabel(c.units)}</span>
+                  <span className="w-44 text-xs text-muted">{exists ? 'موجودة مسبقاً' : schemeForPlan(c).label}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
     </Modal>
   )
 }

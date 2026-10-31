@@ -1,11 +1,12 @@
 import { ArrowDown, ArrowUp, ClipboardPaste, Pencil, Printer, Trash2, Users } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useInvalidate, useStudents } from '../app/queries'
 import { useSession } from '../app/session'
 import { backend } from '../data'
 import { STUDENT_STATUS_LABEL } from '../lib/labels'
 import { parseNameList, splitDuplicates } from '../lib/parse'
-import { canManageDepartment } from '../lib/perm'
+import { canManageDepartment, canSeeDepartment } from '../lib/perm'
 import type { ClassKey, Student, StudentStatus } from '../lib/types'
 import { useConfirm, useToast } from './feedback'
 import { PrintHeader, PrintSignatures } from './PrintParts'
@@ -116,7 +117,15 @@ export function StudentsTab({ classKey }: { classKey: ClassKey }) {
                 {list.map((st, i) => (
                   <tr key={st.id} className={cx(st.status !== 'active' && 'opacity-60')}>
                     <td className="text-center tabular-nums text-muted">{i + 1}</td>
-                    <td className="font-medium">{st.full_name}</td>
+                    <td className="font-medium">
+                      {manage || canSeeDepartment(s.profile, classKey.department_id) ? (
+                        <Link to={`/student/${st.id}`} className="hover:text-primary-text hover:underline">
+                          {st.full_name}
+                        </Link>
+                      ) : (
+                        st.full_name
+                      )}
+                    </td>
                     <td>
                       <Badge tone={st.status === 'active' ? 'success' : st.status === 'withdrawn' ? 'danger' : 'warning'}>{STUDENT_STATUS_LABEL[st.status]}</Badge>
                     </td>

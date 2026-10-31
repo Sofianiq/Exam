@@ -98,3 +98,48 @@ export function parseClipboardGrid(text: string): string[][] {
 }
 
 export { toLatinDigits }
+
+export interface ParsedPlanRow {
+  name: string
+  name_en: string | null
+  category: string | null
+  language: string | null
+  theory_hours: number
+  practical_hours: number
+  units: number
+}
+
+const DASH = /^[-_–—]?$/
+const num = (c: string) => {
+  const v = toLatinDigits(c).trim()
+  if (DASH.test(v)) return 0
+  return /^\d+(\.\d+)?$/.test(v) ? Number(v) : NaN
+}
+const ARABIC_LETTERS = /[\u0600-\u06FF]/
+const LATIN_LETTERS = /[A-Za-z]/
+const LANGS = new Set(['english', 'العربية', 'الانكليزية', 'الإنجليزية', 'الانجليزية', 'عربي', 'انكليزي'])
+const CATEGORY = /تخصصية|عامة|اساسية|أساسية|مساعدة|اختيارية/
+
+/**
+ * يحوّل صفوف جدول الخطة الدراسية الملصوق من Word أو Excel
+ * (ت | اسم المادة | Lecture name | نوعها | لغة التدريس | ن | ع | المجموع | الوحدات)
+ */
+export function parsePlanRows(text: string): ParsedPlanRow[] {
+  const out: ParsedPlanRow[] = []
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const cells = line.split('\t').map((c) => collapseSpaces(c))
+    while (cells.length && cells[cells.length - 1] === '') cells.pop()
+    if (cells.length < 5) continue
+    const tail = cells.slice(-4).map(num)
+    if (tail.some((v) => Number.isNaN(v))) continue
+    const [th, pr, , units] = tail
+    const rest = cells.slice(0, -4).filter((c) => c !== '' && !/^\d+$/.test(toLatinDigits(c)))
+    const language = rest.find((c) => LANGS.has(c.toLowerCase())) ?? null
+    const category = rest.find((c) => CATEGORY.test(c)) ?? null
+    const name = rest.find((c) => ARABIC_LETTERS.test(c) && c !== language && c !== category)
+    const name_en = rest.find((c) => LATIN_LETTERS.test(c) && !ARABIC_LETTERS.test(c) && c !== language) ?? null
+    if (!name || units <= 0) continue
+    out.push({ name, name_en, category, language, theory_hours: th, practical_hours: pr, units })
+  }
+  return out
+}

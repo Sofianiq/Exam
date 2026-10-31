@@ -1,49 +1,43 @@
-import { Award, FileSpreadsheet, Printer, Sheet } from 'lucide-react'
-import { useMemo } from 'react'
-import { useGrades, useStudents, useSubjects } from '../app/queries'
+import { Award, FileSpreadsheet, IdCard, Printer, Sheet } from 'lucide-react'
+import { Fragment } from 'react'
+import { Link } from 'react-router-dom'
+import { useInvalidate } from '../app/queries'
+import { useClassResults, type StudentResultRow } from '../app/results'
 import { useSession } from '../app/session'
 import { backend } from '../data'
-import { bandCounts, computeRow, masterRow, rankDescending, sheetStats, type MasterCell, type RowResult } from '../lib/calc'
-import { displayName, fmtNum, fmtPct, yearLabel } from '../lib/format'
+import { bandCounts, type RowResult } from '../lib/calc'
+import { displayName, fmtNum, fmtPct, unitsLabel, yearLabel } from '../lib/format'
 import { SHIFT_LONG, SPECIAL_LABEL, STATUS_LABEL, TERM_LABEL } from '../lib/labels'
-import type { ClassKey, Grade, Subject, Term } from '../lib/types'
-import { useToast } from './feedback'
+import { canManageDepartment } from '../lib/perm'
+import type { ClassKey, Subject, Term } from '../lib/types'
+import { useConfirm, useToast } from './feedback'
 import { PrintHeader, PrintSignatures } from './PrintParts'
 import { Badge, Button, Callout, Card, CardHeader, EmptyState, LoadingBlock, cx } from './ui'
+
+const STATUS_COLOR: Record<string, string> = {
+  pass: 'text-success',
+  pass_r2: 'text-success',
+  carry: 'text-warning',
+  fail: 'text-danger',
+  incomplete: 'text-muted',
+  none: 'text-muted',
+}
 
 export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term | 0 }) {
   const s = useSession()
   const toast = useToast()
-  const subjectsQ = useSubjects({ ...classKey, term: term || undefined })
-  const studentsQ = useStudents(classKey)
-  const subjects = useMemo(() => subjectsQ.data ?? [], [subjectsQ.data])
-  const gradesQ = useGrades(subjects.map((x) => x.id))
+  const confirm = useConfirm()
+  const invalidate = useInvalidate()
+  const data = useClassResults(classKey, term, s.settings)
   const dept = s.deptById(classKey.department_id)
   const termLabel = term === 0 ? 'النتيجة السنوية' : TERM_LABEL[term]
+  const manage = canManageDepartment(s.profile, classKey.department_id)
+  // في عرض السنة كاملة تُعرض الدرجة النهائية فقط لكل مادة لتبقى الورقة مقروءة
+  const compact = term === 0
 
-  const data = useMemo(() => {
-    const students = studentsQ.data ?? []
-    const gmap = new Map<string, Grade>()
-    for (const g of gradesQ.data ?? []) gmap.set(`${g.subject_id}|${g.student_id}`, g)
-    const results: RowResult[][] = students.map((st) => subjects.map((sub) => computeRow(sub, gmap.get(`${sub.id}|${st.id}`), s.settings)))
-    const rows = results.map((rs) =>
-      masterRow(
-        rs.map<MasterCell>((r) => ({ total: r.total, special: r.special, complete: r.complete })),
-        subjects.map((x) => x.units),
-        s.settings,
-      ),
-    )
-    const activeIdx = students.map((st, i) => (st.status === 'active' ? i : -1)).filter((i) => i >= 0)
-    const ranksActive = rankDescending(activeIdx.map((i) => rows[i].average))
-    const ranks: (number | null)[] = students.map(() => null)
-    activeIdx.forEach((i, k) => (ranks[i] = ranksActive[k]))
-    const subjectStats = subjects.map((_, j) => sheetStats(activeIdx.map((i) => results[i][j]), s.settings.pass_mark))
-    const subjectResults = subjects.map((_, j) => Object.fromEntries(students.map((st, i) => [st.id, results[i][j]])))
-    return { students, rows, ranks, subjectStats, activeIdx, results, subjectResults }
-  }, [studentsQ.data, gradesQ.data, subjects, s.settings])
-
-  if (subjectsQ.isLoading || studentsQ.isLoading || gradesQ.isLoading) return <LoadingBlock />
-  if (subjects.length === 0 || data.students.length === 0) {
+  if (data.loading) return <LoadingBlock />
+  const { subjects, rows, subjectStats } = data
+  if (subjects.length === 0 || rows.length === 0) {
     return (
       <Card>
         <EmptyState icon={<Sheet className="size-6" />} title="لا تتوفر بيانات للماستر شيت">
@@ -53,19 +47,32 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
     )
   }
 
-  const { students, rows, ranks, subjectStats, activeIdx } = data
   const n = subjects.length
   const approved = subjects.filter((x) => x.status === 'approved').length
-  const active = activeIdx.map((i) => ({ st: students[i], row: rows[i], rank: ranks[i] }))
-  const allPass = active.filter((a) => a.row.cells.every((c) => c.total != null && c.total >= s.settings.pass_mark)).length
-  const atRisk = active.filter((a) => a.row.failed >= 3).length
-  const bands = bandCounts(active.map((a) => a.row.average), s.settings.grade_scale)
-  const top = [...active].filter((a) => a.rank != null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).slice(0, 5)
-  const withRate = subjects.map((x, j) => ({ x, st: subjectStats[j] })).filter((v) => v.st.passRate != null)
-  const best = withRate.reduce<(typeof withRate)[number] | null>((m, v) => (!m || (v.st.passRate ?? 0) > (m.st.passRate ?? 0) ? v : m), null)
-  const worst = withRate.reduce<(typeof withRate)[number] | null>((m, v) => (!m || (v.st.passRate ?? 1) < (m.st.passRate ?? 1) ? v : m), null)
-  const bestAvg = withRate.reduce<(typeof withRate)[number] | null>((m, v) => (!m || (v.st.avg ?? 0) > (m.st.avg ?? 0) ? v : m), null)
-  const worstAvg = withRate.reduce<(typeof withRate)[number] | null>((m, v) => (!m || (v.st.avg ?? 100) < (m.st.avg ?? 100) ? v : m), null)
+  const active = rows.filter((r) => r.student.status === 'active')
+  const passAll = active.filter((r) => r.summary.status === 'pass' || r.summary.status === 'pass_r2').length
+  const carry = active.filter((r) => r.summary.status === 'carry').length
+  const failCount = active.filter((r) => r.summary.status === 'fail').length
+  const bands = bandCounts(active.map((r) => r.summary.average), s.settings.grade_scale)
+  const top = [...active].filter((r) => r.rank != null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).slice(0, 5)
+  const totalUnits = subjects.reduce((a, x) => a + (x.units ?? 0), 0)
+  const missingUnits = subjects.some((x) => !x.units)
+
+  const editNote = async (r: StudentResultRow) => {
+    const v = await confirm({
+      title: `ملاحظات — ${r.student.full_name}`,
+      input: { label: 'الملاحظات', multiline: true, initial: r.student.notes ?? '' },
+      confirmText: 'حفظ',
+    })
+    if (typeof v !== 'string') return
+    try {
+      await backend.updateStudent(r.student.id, { notes: v || null })
+      toast.success('تم حفظ الملاحظة')
+      void invalidate('students')
+    } catch (e) {
+      toast.error(e)
+    }
+  }
 
   const exportExcel = async () => {
     try {
@@ -78,24 +85,16 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
         stage: classKey.stage,
         shift: classKey.shift,
         termLabel,
-        subjects,
-        students,
-        rows,
-        ranks,
-        subjectStats,
+        compact,
+        data,
         subjectSheets: subjects.map((sub, j) => ({
           settings: s.settings,
           deptName: dept?.name ?? '',
           yearLabel: year,
           subject: sub,
           teachers: sub.teacher_ids.map((id) => displayName(s.profileById(id))).join(' + '),
-          students,
-          rows: Object.fromEntries(
-            students.map((st, i) => {
-              const g = gradesQ.data?.find((x) => x.subject_id === sub.id && x.student_id === st.id)
-              return [st.id, { values: g ?? { cw_theory: null, cw_practical: null, final_practical: null, final_theory: null, special: null, note: null }, result: data.results[i][j] }]
-            }),
-          ),
+          students: rows.map((r) => r.student),
+          rows: Object.fromEntries(rows.map((r) => [r.student.id, { values: r.grades[j] ?? EMPTY_VALUES, result: r.results[j] }])),
           stats: subjectStats[j],
         })),
       })
@@ -105,8 +104,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
     }
   }
 
-  const cellText = (c: MasterCell) => (c.special ? SPECIAL_LABEL[c.special] : fmtNum(c.total))
-  const isFail = (c: MasterCell) => c.total != null && c.total < s.settings.pass_mark
+  const resultsLink = `/class/${classKey.department_id}/${classKey.stage}/${classKey.shift}/results?term=${term}`
 
   return (
     <>
@@ -116,12 +114,22 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
             {approved} من {n} مواد معتمدة من اللجنة الامتحانية. تُعرض الدرجات الحالية لجميع المواد.
           </Callout>
         )}
+        {missingUnits && s.settings.average_mode === 'weighted' && (
+          <Callout tone="info" title="وحدات بعض المواد غير محددة">
+            يُحسب المعدل بضرب درجة كل مادة في وحداتها. المواد التي لم تُحدد وحداتها تُحتسب بوحدة واحدة؛ حدّد الوحدات من «تعديل المادة».
+          </Callout>
+        )}
         <Card>
           <CardHeader
             title={`الماستر شيت — ${termLabel}`}
-            subtitle={`${n} مادة — ${active.length} طالب مستمر`}
+            subtitle={`${n} مادة — ${unitsLabel(totalUnits)} — ${active.length} طالب مستمر — المعدل ${s.settings.average_mode === 'weighted' ? 'موزون بالوحدات' : 'حسابي بسيط'}`}
             actions={
               <>
+                <Link to={resultsLink}>
+                  <Button size="sm" icon={<IdCard className="size-4" />}>
+                    نتائج الطلبة (طباعة)
+                  </Button>
+                </Link>
                 <Button
                   size="sm"
                   icon={<Printer className="size-4" />}
@@ -138,81 +146,20 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
               </>
             }
           />
-          <div className="max-h-[70vh] overflow-auto scrollbar-thin">
-            <table className="grade-grid w-full min-w-[900px] text-sm">
-              <thead>
-                <tr>
-                  <th className="sticky-col start-0 w-11 px-2 py-2 text-center text-xs text-muted">ت</th>
-                  <th className="sticky-col start-11 min-w-52 px-3 py-2 text-start text-xs text-muted">اسم الطالب</th>
-                  {subjects.map((x) => (
-                    <th key={x.id} className="max-w-28 min-w-24 px-1.5 py-2 text-center align-bottom text-[0.72rem] font-semibold leading-tight text-ink">
-                      <div className="mb-1 flex justify-center">
-                        <StatusDot status={x.status} />
-                      </div>
-                      {x.name}
-                      {term === 0 && <span className="mt-0.5 block font-normal text-faint">ف{x.term}</span>}
-                    </th>
-                  ))}
-                  <th className="w-16 bg-gold-soft! px-2 py-2 text-center text-xs font-bold">المعدل</th>
-                  <th className="w-16 px-2 py-2 text-center text-xs text-muted">النجاح (من {n})</th>
-                  <th className="w-14 px-2 py-2 text-center text-xs text-muted">الترتيب</th>
-                  <th className="min-w-44 px-2 py-2 text-start text-xs text-muted">الحالة العامة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {students.map((st, i) => {
-                  const r = rows[i]
-                  const inactive = st.status !== 'active'
-                  return (
-                    <tr key={st.id} className={cx(inactive && 'opacity-50')}>
-                      <td className="sticky-col start-0 px-2 py-1.5 text-center text-xs tabular-nums text-muted">{i + 1}</td>
-                      <td className="sticky-col start-11 px-3 py-1.5 font-medium whitespace-nowrap">{st.full_name}</td>
-                      {r.cells.map((c, j) => (
-                        <td key={j} className={cx('px-1 text-center tabular-nums', isFail(c) && 'font-bold text-danger', c.special && 'text-xs text-warning')}>
-                          {cellText(c)}
-                        </td>
-                      ))}
-                      <td className="bg-gold-soft/50 px-2 text-center font-bold tabular-nums">{fmtNum(r.average)}</td>
-                      <td className="px-2 text-center tabular-nums">{r.cells.some((c) => c.total != null) ? r.passed : ''}</td>
-                      <td className="px-2 text-center font-semibold tabular-nums">{ranks[i] ?? ''}</td>
-                      <td className={cx('px-2 text-xs whitespace-nowrap', r.failed > 0 ? 'text-danger' : r.status ? 'text-success' : 'text-muted')}>{inactive ? (st.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : r.status}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-              <tfoot>
-                {[
-                  { label: 'المعدل العام', f: (j: number) => fmtNum(subjectStats[j].avg) },
-                  { label: 'عدد الناجحين', f: (j: number) => subjectStats[j].pass },
-                  { label: 'عدد الراسبين', f: (j: number) => subjectStats[j].fail },
-                  { label: 'نسبة النجاح', f: (j: number) => fmtPct(subjectStats[j].passRate) },
-                ].map((row) => (
-                  <tr key={row.label} className="bg-surface-2 font-semibold">
-                    <td className="sticky-col start-0 bg-surface-2!" />
-                    <td className="sticky-col start-11 bg-surface-2! px-3 py-2 text-xs">{row.label}</td>
-                    {subjects.map((_, j) => (
-                      <td key={j} className="px-1 py-2 text-center text-xs tabular-nums">
-                        {row.f(j)}
-                      </td>
-                    ))}
-                    <td colSpan={4} />
-                  </tr>
-                ))}
-              </tfoot>
-            </table>
+          <div className="max-h-[72vh] overflow-auto scrollbar-thin">
+            <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} onNote={manage ? editNote : undefined} />
           </div>
         </Card>
 
         <div className="grid gap-4 lg:grid-cols-3">
           <Card>
-            <CardHeader title="مؤشرات الأداء" />
+            <CardHeader title="ملخص النتائج" />
             <dl className="divide-y divide-line text-sm">
-              <Kpi label="أعلى نسبة نجاح" value={best ? `${best.x.name} — ${fmtPct(best.st.passRate)}` : '—'} />
-              <Kpi label="أدنى نسبة نجاح" value={worst ? `${worst.x.name} — ${fmtPct(worst.st.passRate)}` : '—'} />
-              <Kpi label="أعلى متوسط درجات" value={bestAvg ? `${bestAvg.x.name} — ${fmtNum(bestAvg.st.avg)}` : '—'} />
-              <Kpi label="أدنى متوسط درجات" value={worstAvg ? `${worstAvg.x.name} — ${fmtNum(worstAvg.st.avg)}` : '—'} />
-              <Kpi label="الناجحون في جميع المواد" value={`${allPass} طالب (${fmtPct(active.length ? allPass / active.length : null)})`} />
-              <Kpi label="الرسوب في 3 مواد أو أكثر" value={`${atRisk} طالب`} danger={atRisk > 0} />
+              <Kpi label="ناجحون" value={`${passAll} طالب (${fmtPct(active.length ? passAll / active.length : null)})`} tone="text-success" />
+              <Kpi label="مكملون (دور ثانٍ)" value={`${carry} طالب`} tone="text-warning" />
+              <Kpi label={`راسبون (أكثر من ${s.settings.max_failed_subjects} مواد)`} value={`${failCount} طالب`} tone="text-danger" />
+              <Kpi label="أعلى معدل" value={top[0] ? fmtNum(top[0].summary.average) : '—'} />
+              <Kpi label="مجموع وحدات الفصل" value={`${totalUnits}`} />
             </dl>
           </Card>
           <Card>
@@ -237,11 +184,13 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
           <Card>
             <CardHeader title="الأوائل على المرحلة" icon={<Award className="size-4.5" />} />
             <ol className="divide-y divide-line">
-              {top.map((a) => (
-                <li key={a.st.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
-                  <span className={cx('flex size-7 items-center justify-center rounded-full text-xs font-bold', a.rank === 1 ? 'bg-gold text-white' : 'bg-gold-soft text-gold-text')}>{a.rank}</span>
-                  <span className="flex-1 truncate font-medium">{a.st.full_name}</span>
-                  <Badge tone="primary">{fmtNum(a.row.average)}</Badge>
+              {top.map((r) => (
+                <li key={r.student.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+                  <span className={cx('flex size-7 items-center justify-center rounded-full text-xs font-bold', r.rank === 1 ? 'bg-gold text-white' : 'bg-gold-soft text-gold-text')}>{r.rank}</span>
+                  <Link to={`/student/${r.student.id}`} className="flex-1 truncate font-medium hover:text-primary-text">
+                    {r.student.full_name}
+                  </Link>
+                  <Badge tone="primary">{fmtNum(r.summary.average)}</Badge>
                 </li>
               ))}
               {top.length === 0 && <li className="px-5 py-6 text-center text-sm text-muted">لا توجد معدلات بعد</li>}
@@ -253,55 +202,207 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
       {/* نسخة الطباعة (أفقي) */}
       <div className="print-only print-landscape">
         <PrintHeader classKey={classKey} term={term} title={`الماستر شيت لدرجات الطلبة — ${SHIFT_LONG[classKey.shift]}`} />
-        <table className="print-table" style={{ fontSize: n > 8 ? '8pt' : '9.5pt' }}>
-          <thead>
-            <tr>
-              <th>ت</th>
-              <th>اسم الطالب</th>
-              {subjects.map((x) => (
-                <th key={x.id} style={{ maxWidth: '70px' }}>
-                  {x.name}
-                </th>
-              ))}
-              <th>المعدل</th>
-              <th>النجاح</th>
-              <th>الترتيب</th>
-              <th>الحالة العامة</th>
-            </tr>
-          </thead>
-          <tbody>
-            {students.map((st, i) => (
-              <tr key={st.id}>
-                <td>{i + 1}</td>
-                <td className="name">{st.full_name}</td>
-                {rows[i].cells.map((c, j) => (
-                  <td key={j} className={isFail(c) ? 'print-fail' : ''}>
-                    {cellText(c)}
-                  </td>
-                ))}
-                <td style={{ fontWeight: 700 }}>{fmtNum(rows[i].average)}</td>
-                <td>{rows[i].cells.some((c) => c.total != null) ? rows[i].passed : ''}</td>
-                <td>{ranks[i] ?? ''}</td>
-                <td style={{ fontSize: '8pt' }}>{st.status !== 'active' ? (st.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : rows[i].status}</td>
-              </tr>
-            ))}
-            {[
-              ['المعدل العام', (j: number) => fmtNum(subjectStats[j].avg)],
-              ['نسبة النجاح', (j: number) => fmtPct(subjectStats[j].passRate)],
-            ].map(([label, f]) => (
-              <tr key={label as string}>
-                <th colSpan={2}>{label as string}</th>
-                {subjects.map((_, j) => (
-                  <th key={j}>{(f as (j: number) => string)(j)}</th>
-                ))}
-                <th colSpan={4} />
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} print />
         <PrintSignatures labels={['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد']} />
       </div>
     </>
+  )
+}
+
+const EMPTY_VALUES = {
+  cw_theory: null,
+  cw_practical: null,
+  final_practical: null,
+  final_theory: null,
+  special: null,
+  note: null,
+  r2_final_practical: null,
+  r2_final_theory: null,
+  r2_special: null,
+}
+
+function MasterTable({
+  subjects,
+  rows,
+  compact,
+  subjectStats,
+  term,
+  print,
+  onNote,
+}: {
+  subjects: Subject[]
+  rows: StudentResultRow[]
+  compact: boolean
+  subjectStats: ReturnType<typeof useClassResults>['subjectStats']
+  term: Term | 0
+  print?: boolean
+  onNote?: (r: StudentResultRow) => void
+}) {
+  const s = useSession()
+  const pass = s.settings.pass_mark
+  const per = compact ? 1 : 3
+  const isFail = (v: number | null | undefined) => v != null && v < pass
+  const finalText = (r: RowResult) => (r.special ? SPECIAL_LABEL[r.special] : fmtNum(r.finalSum))
+  const th = print ? '' : 'px-1.5 py-2 text-center text-[0.72rem] font-semibold text-muted'
+  const td = print ? '' : 'px-1 text-center tabular-nums'
+  const sticky0 = print ? '' : 'sticky-col start-0'
+  const sticky1 = print ? '' : 'sticky-col start-11'
+
+  return (
+    <table className={print ? 'print-table master-print' : 'grade-grid w-full min-w-[1000px] text-sm'} style={print ? { fontSize: subjects.length * per > 24 ? '7pt' : '8.5pt' } : undefined}>
+      <thead>
+        <tr>
+          <th rowSpan={compact ? 1 : 2} className={cx(sticky0, !print && 'w-11 px-2 text-xs text-muted')}>
+            ت
+          </th>
+          <th rowSpan={compact ? 1 : 2} className={cx(sticky1, !print && 'min-w-52 px-3 text-start text-xs text-muted')}>
+            اسم الطالب
+          </th>
+          {subjects.map((x) => (
+            <th key={x.id} colSpan={per} className={cx(!print && 'min-w-28 border-b px-1.5 py-2 text-center align-bottom text-[0.72rem] font-bold leading-tight text-ink')}>
+              {!print && (
+                <span className="mb-1 flex justify-center">
+                  <StatusDot status={x.status} />
+                </span>
+              )}
+              {x.name}
+              <span className={cx('block font-normal', !print && 'text-faint')}>
+                {unitsLabel(x.units)}
+                {term === 0 ? ` — ف${x.term}` : ''}
+              </span>
+            </th>
+          ))}
+          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'w-16 bg-surface-3! px-2 text-center text-xs font-bold')}>
+            مجموع الدرجات
+          </th>
+          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'w-16 bg-gold-soft! px-2 text-center text-xs font-bold')}>
+            المعدل
+          </th>
+          {!print && (
+            <th rowSpan={compact ? 1 : 2} className="w-12 px-2 text-center text-xs text-muted">
+              الترتيب
+            </th>
+          )}
+          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'min-w-36 px-2 text-start text-xs text-muted')}>
+            النتيجة
+          </th>
+          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'min-w-32 px-2 text-start text-xs text-muted')}>
+            الملاحظات
+          </th>
+        </tr>
+        {!compact && (
+          <tr>
+            {subjects.map((x) => (
+              <Fragment key={x.id}>
+                <th className={th}>سعي ({x.coursework_max})</th>
+                <th className={th}>نهائي ({x.final_max + x.practical_max})</th>
+                <th className={th}>المجموع</th>
+              </Fragment>
+            ))}
+          </tr>
+        )}
+      </thead>
+      <tbody>
+        {rows.map((row, i) => {
+          const inactive = row.student.status !== 'active'
+          const hasR2 = !compact && row.results.some((r) => r.complete && r.needsR2)
+          const span = hasR2 ? 2 : 1
+          const sum = row.summary
+          return (
+            <Fragment key={row.student.id}>
+              <tr className={cx(inactive && 'opacity-50')}>
+                <td rowSpan={span} className={cx(sticky0, !print && 'px-2 py-1.5 text-center text-xs tabular-nums text-muted')}>
+                  {i + 1}
+                </td>
+                <td rowSpan={span} className={cx(sticky1, print ? 'name' : 'px-3 py-1.5 font-medium whitespace-nowrap')}>
+                  {print ? (
+                    row.student.full_name
+                  ) : (
+                    <Link to={`/student/${row.student.id}`} className="hover:text-primary-text hover:underline">
+                      {row.student.full_name}
+                    </Link>
+                  )}
+                </td>
+                {row.results.map((r, j) =>
+                  compact ? (
+                    <td key={j} className={cx(td, isFail(r.finalTotal) && 'font-bold text-danger print-fail', r.finalSpecial && 'text-xs text-warning')}>
+                      {r.finalSpecial ? SPECIAL_LABEL[r.finalSpecial] : fmtNum(r.finalTotal)}
+                      {r.finalRound === 2 && <sup className="ms-0.5 text-gold-text">د2</sup>}
+                    </td>
+                  ) : (
+                    <Fragment key={j}>
+                      <td className={cx(td, !print && 'text-muted')}>{fmtNum(r.coursework)}</td>
+                      <td className={cx(td, r.special && 'text-xs text-warning')}>{finalText(r)}</td>
+                      <td className={cx(td, 'font-semibold', isFail(r.total) && 'text-danger print-fail')}>{fmtNum(r.total)}</td>
+                    </Fragment>
+                  ),
+                )}
+                <td rowSpan={span} className={cx(td, !print && 'bg-surface-2/70 font-semibold')}>
+                  {fmtNum(sum.sum)}
+                </td>
+                <td rowSpan={span} className={cx(td, !print && 'bg-gold-soft/50 font-bold')} style={print ? { fontWeight: 700 } : undefined}>
+                  {fmtNum(sum.average)}
+                </td>
+                {!print && (
+                  <td rowSpan={span} className="px-2 text-center font-semibold tabular-nums">
+                    {row.rank ?? ''}
+                  </td>
+                )}
+                <td rowSpan={span} className={cx(!print && 'px-2 text-xs font-semibold', STATUS_COLOR[sum.status])} style={print ? { fontSize: '7.5pt', whiteSpace: 'normal' } : undefined}>
+                  {inactive ? (row.student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : sum.statusText}
+                </td>
+                <td rowSpan={span} className={cx(!print && 'px-2 text-xs text-muted')} style={print ? { fontSize: '7.5pt', whiteSpace: 'normal' } : undefined}>
+                  {onNote ? (
+                    <button className="w-full text-start hover:text-primary-text" title="تعديل الملاحظة" onClick={() => onNote(row)}>
+                      {row.student.notes || <span className="text-faint">+ ملاحظة</span>}
+                    </button>
+                  ) : (
+                    row.student.notes
+                  )}
+                </td>
+              </tr>
+              {hasR2 && (
+                <tr className={cx('text-xs', inactive && 'opacity-50')}>
+                  {row.results.map((r, j) => {
+                    const show = r.complete && r.needsR2
+                    return (
+                      <Fragment key={j}>
+                        <td className={cx(td, !print && 'bg-gold-soft/40 text-[0.65rem] font-semibold text-gold-text')}>{show ? 'د2' : ''}</td>
+                        <td className={cx(td, !print && 'bg-gold-soft/40', r.r2Special && 'text-warning')}>
+                          {show ? (r.r2Special ? SPECIAL_LABEL[r.r2Special] : fmtNum(r.r2FinalSum)) : ''}
+                        </td>
+                        <td className={cx(td, !print && 'bg-gold-soft/40 font-semibold', show && isFail(r.r2Total) && 'text-danger print-fail', show && r.r2Total != null && !isFail(r.r2Total) && 'text-success')}>
+                          {show ? fmtNum(r.r2Total) : ''}
+                        </td>
+                      </Fragment>
+                    )
+                  })}
+                </tr>
+              )}
+            </Fragment>
+          )
+        })}
+      </tbody>
+      <tfoot>
+        {[
+          { label: 'المعدل العام', f: (j: number) => fmtNum(subjectStats[j].avg) },
+          { label: 'عدد الناجحين', f: (j: number) => String(subjectStats[j].pass) },
+          { label: 'عدد الراسبين', f: (j: number) => String(subjectStats[j].fail) },
+          { label: 'نسبة النجاح', f: (j: number) => fmtPct(subjectStats[j].passRate) },
+        ].map((r) => (
+          <tr key={r.label} className={cx(!print && 'bg-surface-2 font-semibold')}>
+            <td className={cx(sticky0, !print && 'bg-surface-2!')} />
+            <td className={cx(sticky1, !print && 'bg-surface-2! px-3 py-2 text-xs')}>{r.label}</td>
+            {subjects.map((_, j) => (
+              <td key={j} colSpan={per} className={cx(!print && 'px-1 py-2 text-center text-xs tabular-nums')}>
+                {r.f(j)}
+              </td>
+            ))}
+            <td colSpan={print ? 4 : 5} />
+          </tr>
+        ))}
+      </tfoot>
+    </table>
   )
 }
 
@@ -310,11 +411,11 @@ function StatusDot({ status }: { status: Subject['status'] }) {
   return <span title={STATUS_LABEL[status]} aria-label={STATUS_LABEL[status]} className={cx('inline-block size-2 rounded-full', color)} />
 }
 
-function Kpi({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="flex items-start justify-between gap-3 px-5 py-2.5">
       <dt className="text-muted">{label}</dt>
-      <dd className={cx('text-end font-medium', danger && 'text-danger')}>{value}</dd>
+      <dd className={cx('text-end font-medium', tone)}>{value}</dd>
     </div>
   )
 }

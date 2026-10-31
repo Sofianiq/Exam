@@ -25,6 +25,9 @@ export const useGrades = (subjectIds: string[]) => {
   return useQuery({ queryKey: ['grades', ids], queryFn: () => backend.getGrades(ids), enabled: ids.length > 0 })
 }
 
+export const useCurriculum = (departmentId: string | undefined) =>
+  useQuery({ queryKey: ['curriculum', departmentId], queryFn: () => backend.listCurriculum(departmentId!), enabled: !!departmentId })
+
 export const useProgress = (yearId: string) =>
   useQuery({ queryKey: ['progress', yearId], queryFn: () => backend.listProgress(yearId), enabled: !!yearId })
 

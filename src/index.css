@@ -250,6 +250,42 @@
   background-color: color-mix(in srgb, var(--primary-soft) 45%, var(--surface));
 }
 
+/* ===== نتيجة الطالب (ورقة رسمية A4) ===== */
+.result-card {
+  width: 100%;
+  max-width: 210mm;
+  margin: 0 auto;
+  padding: 7mm;
+  background: #fffdf8;
+  color: #1b241f;
+  border-radius: 6px;
+  box-shadow: var(--shadow-lg);
+}
+.result-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 268mm;
+  padding: 9mm 8mm 7mm;
+  border: 3px double #0b5a3a;
+  /* خط ذهبي داخلي (لا يتجاوز حدود الصفحة عند الطباعة كما يفعل outline) */
+  box-shadow:
+    inset 0 0 0 4px #fffdf8,
+    inset 0 0 0 5px #b7882a;
+  overflow: hidden;
+}
+.result-frame > *:not(.result-watermark) {
+  position: relative;
+}
+.result-watermark {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 60%;
+  opacity: 0.05;
+  pointer-events: none;
+}
+
 /* ===== الطباعة ===== */
 .print-only {
   display: none;
@@ -302,6 +338,24 @@
   .print-fail {
     color: #b42318 !important;
     font-weight: 700;
+  }
+  .result-card {
+    max-width: none;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    break-after: page;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .result-card:last-child {
+    break-after: auto;
+  }
+  .result-frame {
+    min-height: 262mm;
+  }
+  main {
+    padding: 0 !important;
   }
 }
 

@@ -1,4 +1,4 @@
-import type { GradeBand, GradeComponent, GradeValues, Rounding, Settings, SpecialCode, Subject } from './types'
+import type { GradeBand, GradeComponent, GradeValues, R2Component, Rounding, Settings, SpecialCode, Subject } from './types'
 
 export type Scheme = Pick<Subject, 'coursework_max' | 'cw_practical_max' | 'practical_max' | 'final_max'>
 
@@ -33,6 +33,13 @@ export function componentsOf(s: Scheme): ComponentDef[] {
   return out
 }
 
+/** توزيع الدرجة المقترح من الخطة الدراسية: مادة فيها ساعات عملية ← 40/25/35، وإلا ← نظري فقط 30/70 */
+export function schemeForPlan(c: { practical_hours: number }) {
+  return c.practical_hours > 0
+    ? { coursework_max: 40, cw_practical_max: 15, practical_max: 25, label: 'نظري وعملي — 40/25/35' }
+    : { coursework_max: 30, cw_practical_max: 0, practical_max: 0, label: 'نظري فقط — 30/70' }
+}
+
 export const finalMaxOf = (coursework: number, practical: number) => round2(100 - coursework - practical)
 
 export function round2(x: number): number {
@@ -53,28 +60,48 @@ export function gradeLabel(total: number | null, scale: GradeBand[]): string | n
   return sorted[sorted.length - 1]?.label ?? null
 }
 
+/** مكوّن الدور الثاني المقابل لكل مكوّن من الامتحان النهائي */
+export const R2_OF: Partial<Record<GradeComponent, R2Component>> = {
+  final_practical: 'r2_final_practical',
+  final_theory: 'r2_final_theory',
+}
+
 export interface RowResult {
   coursework: number | null
   finalSum: number | null
+  /** مجموع الدور الأول */
   total: number | null
   complete: boolean
   missing: GradeComponent[]
   special: SpecialCode | null
   label: string | null
   passed: boolean | null
+  /** الطالب غير ناجح في الدور الأول (رسوب أو حالة خاصة) فيحق له الدور الثاني */
+  needsR2: boolean
+  r2FinalSum: number | null
+  r2Total: number | null
+  r2Special: SpecialCode | null
+  r2Complete: boolean
+  /** النتيجة النهائية للمادة بعد الدور الثاني إن وُجد */
+  finalTotal: number | null
+  finalRound: 1 | 2
+  finalSpecial: SpecialCode | null
+  finalLabel: string | null
+  finalPassed: boolean | null
 }
 
-type CalcSettings = Pick<Settings, 'pass_mark' | 'rounding' | 'grade_scale'>
+type CalcSettings = Pick<Settings, 'pass_mark' | 'rounding' | 'grade_scale'> & Partial<Pick<Settings, 'second_round_cap'>>
 
 export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined, settings: CalcSettings): RowResult {
   const comps = componentsOf(subject)
-  const val = (k: GradeComponent) => (v?.[k] ?? null) as number | null
+  const val = (k: GradeComponent | R2Component) => (v?.[k] ?? null) as number | null
   const missing = comps.filter((c) => val(c.key) == null).map((c) => c.key)
-  const sumGroup = (g: 'coursework' | 'final') => {
+  const sumGroup = (g: 'coursework' | 'final', round: 1 | 2 = 1) => {
     const parts = comps.filter((c) => c.group === g)
     if (parts.length === 0) return 0
-    if (parts.some((c) => val(c.key) == null)) return null
-    return round2(parts.reduce((acc, c) => acc + (val(c.key) as number), 0))
+    const key = (c: ComponentDef) => (round === 2 ? (R2_OF[c.key] as R2Component) : c.key)
+    if (parts.some((c) => val(key(c)) == null)) return null
+    return round2(parts.reduce((acc, c) => acc + (val(key(c)) as number), 0))
   }
   const coursework = sumGroup('coursework')
   const finalSum = sumGroup('final')
@@ -84,6 +111,22 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
   if (special == null && missing.length === 0 && coursework != null && finalSum != null) {
     total = applyRounding(coursework + finalSum, settings.rounding)
   }
+  const passed = total != null ? total >= settings.pass_mark : special != null ? false : null
+
+  // الدور الثاني: السعي ثابت ويُعاد الامتحان النهائي فقط
+  const needsR2 = special != null || (total != null && total < settings.pass_mark)
+  const r2Special = v?.r2_special ?? null
+  const r2FinalSum = sumGroup('final', 2)
+  const hasR2Values = comps.some((c) => c.group === 'final' && val(R2_OF[c.key] as R2Component) != null)
+  let r2Total: number | null = null
+  if (r2Special == null && coursework != null && r2FinalSum != null && hasR2Values) {
+    const cap = special === 'postponed' ? 100 : (settings.second_round_cap ?? 100)
+    r2Total = Math.min(applyRounding(coursework + r2FinalSum, settings.rounding), cap)
+  }
+  const r2Complete = r2Special != null || r2Total != null
+  const useR2 = needsR2 && r2Complete
+  const finalTotal = useR2 ? r2Total : total
+  const finalSpecial = useR2 ? r2Special : special
   return {
     coursework: comps.some((c) => c.group === 'coursework') ? coursework : null,
     finalSum: comps.some((c) => c.group === 'final') ? finalSum : null,
@@ -92,7 +135,17 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
     missing: special != null ? [] : missing,
     special,
     label: total != null ? gradeLabel(total, settings.grade_scale) : null,
-    passed: total != null ? total >= settings.pass_mark : special != null ? false : null,
+    passed,
+    needsR2,
+    r2FinalSum: hasR2Values ? r2FinalSum : null,
+    r2Total,
+    r2Special,
+    r2Complete,
+    finalTotal,
+    finalRound: useR2 ? 2 : 1,
+    finalSpecial,
+    finalLabel: finalTotal != null ? gradeLabel(finalTotal, settings.grade_scale) : null,
+    finalPassed: finalTotal != null ? finalTotal >= settings.pass_mark : finalSpecial != null ? false : null,
   }
 }
 
@@ -131,50 +184,96 @@ export function rankDescending(values: (number | null)[]): (number | null)[] {
   return values.map((v) => (v == null ? null : values.filter((o) => o != null && o > v).length + 1))
 }
 
-export type MasterCell = { total: number | null; special: SpecialCode | null; complete: boolean }
+export type ResultStatus = 'none' | 'incomplete' | 'pass' | 'pass_r2' | 'carry' | 'fail'
 
-export interface MasterRow {
-  cells: MasterCell[]
+export interface StudentSummary {
+  /** مجموع الدرجات النهائية لكل المواد */
+  sum: number | null
+  /** المعدل: Σ(درجة × وحدات) ÷ Σ الوحدات، أو متوسط بسيط حسب الإعدادات */
   average: number | null
-  passed: number
-  failed: number
-  specials: number
+  averageLabel: string | null
+  units: number
+  passedCount: number
+  /** المواد غير المجتازة في الدور الأول */
+  r1Failed: string[]
+  /** المواد غير المجتازة بعد الدور الثاني */
+  finalFailed: string[]
+  /** مواد ما زالت بانتظار نتيجة الدور الثاني */
+  pendingR2: string[]
   missing: number
-  status: string
+  status: ResultStatus
+  statusText: string
 }
 
-export function masterRow(
-  cells: MasterCell[],
-  units: (number | null)[],
-  settings: Pick<Settings, 'pass_mark' | 'average_mode'>,
-): MasterRow {
-  const nums: { v: number; u: number | null }[] = []
-  cells.forEach((c, i) => {
-    if (c.total != null) nums.push({ v: c.total, u: units[i] ?? null })
+type SummarySettings = Pick<Settings, 'pass_mark' | 'average_mode' | 'grade_scale'> & Partial<Pick<Settings, 'max_failed_subjects'>>
+
+/**
+ * نتيجة الطالب في مجموعة مواد (فصل أو سنة):
+ * ناجح — أو مكمل (رسوب في عدد مواد لا يتجاوز الحد المسموح، مع ذكرها) — أو راسب (أكثر من الحد).
+ */
+export function summarizeStudent(
+  subjects: { name: string; units: number | null }[],
+  results: RowResult[],
+  settings: SummarySettings,
+): StudentSummary {
+  const maxFailed = settings.max_failed_subjects ?? 2
+  const nums: { v: number; u: number }[] = []
+  results.forEach((r, i) => {
+    if (r.finalTotal != null) nums.push({ v: r.finalTotal, u: subjects[i]?.units && subjects[i].units! > 0 ? subjects[i].units! : 1 })
   })
+  const sum = nums.length ? round2(nums.reduce((a, n) => a + n.v, 0)) : null
   let average: number | null = null
+  let units = 0
   if (nums.length) {
-    const weighted = settings.average_mode === 'weighted' && nums.every((n) => n.u != null && n.u > 0)
-    if (weighted) {
-      const w = nums.reduce((a, n) => a + (n.u as number), 0)
-      average = round2(nums.reduce((a, n) => a + n.v * (n.u as number), 0) / w)
-    } else {
-      average = round2(nums.reduce((a, n) => a + n.v, 0) / nums.length)
-    }
+    units = nums.reduce((a, n) => a + n.u, 0)
+    average =
+      settings.average_mode === 'weighted'
+        ? round2(nums.reduce((a, n) => a + n.v * n.u, 0) / units)
+        : round2(nums.reduce((a, n) => a + n.v, 0) / nums.length)
   }
-  const passed = nums.filter((n) => n.v >= settings.pass_mark).length
-  const failed = nums.length - passed
-  const specials = cells.filter((c) => c.special != null).length
-  const missing = cells.filter((c) => !c.complete).length
-  let status = ''
-  if (nums.length || specials) {
-    const parts: string[] = []
-    if (failed > 0) parts.push(`راسب في ${failed} ${failed === 1 ? 'مادة' : 'مواد'}`)
-    if (specials > 0) parts.push(`حالة خاصة (${specials})`)
-    if (missing > 0) parts.push(`غير مكتمل (${missing})`)
-    status = parts.length ? parts.join('، ') : 'ناجح في جميع المواد'
+  const name = (i: number) => subjects[i]?.name ?? ''
+  const r1Failed = results.flatMap((r, i) => (r.complete && r.needsR2 ? [name(i)] : []))
+  const finalFailed = results.flatMap((r, i) => (r.complete && r.finalPassed === false ? [name(i)] : []))
+  const pendingR2 = results.flatMap((r, i) => (r.needsR2 && !r.r2Complete ? [name(i)] : []))
+  const missing = results.filter((r) => !r.complete).length
+  const passedCount = results.filter((r) => r.finalPassed === true).length
+  const any = results.some((r) => r.complete)
+
+  let status: ResultStatus = 'none'
+  let statusText = ''
+  if (!any) status = 'none'
+  else if (missing > 0) {
+    status = 'incomplete'
+    statusText = `النتيجة غير مكتملة (${missing} ${missing === 1 ? 'مادة' : 'مواد'})`
+  } else if (r1Failed.length === 0) {
+    status = 'pass'
+    statusText = 'ناجح'
+  } else if (r1Failed.length > maxFailed) {
+    status = 'fail'
+    statusText = 'راسب'
+  } else if (pendingR2.length > 0) {
+    status = 'carry'
+    statusText = `مكمل في: ${r1Failed.join('، ')}`
+  } else if (finalFailed.length === 0) {
+    status = 'pass_r2'
+    statusText = 'ناجح (الدور الثاني)'
+  } else {
+    status = 'fail'
+    statusText = 'راسب'
   }
-  return { cells, average, passed, failed, specials, missing, status }
+  return {
+    sum,
+    average,
+    averageLabel: average != null ? gradeLabel(average, settings.grade_scale) : null,
+    units,
+    passedCount,
+    r1Failed,
+    finalFailed,
+    pendingR2,
+    missing,
+    status,
+    statusText,
+  }
 }
 
 export function bandCounts(values: (number | null)[], scale: GradeBand[]) {

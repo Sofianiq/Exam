@@ -49,6 +49,8 @@ function GeneralSettings() {
         rounding: form.rounding,
         average_mode: form.average_mode,
         idle_minutes: Number(form.idle_minutes),
+        second_round_cap: form.second_round_cap == null || Number.isNaN(form.second_round_cap) ? null : Number(form.second_round_cap),
+        max_failed_subjects: Number(form.max_failed_subjects),
         grade_scale: scale.map((b) => ({ min: Number(b.min), label: b.label.trim() })),
       })
       await qc.invalidateQueries({ queryKey: ['settings'] })
@@ -101,6 +103,23 @@ function GeneralSettings() {
             </Field>
             <Field label="الخروج التلقائي بعد خمول (دقيقة)">
               <Input type="number" min={5} max={600} dir="ltr" className="text-center" value={form.idle_minutes} onChange={(e) => set('idle_minutes', Number(e.target.value))} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="الحد الأقصى لمواد الإكمال" hint="الرسوب في أكثر من هذا العدد = راسب، وإلا = مكمل">
+              <Input type="number" min={0} max={10} dir="ltr" className="text-center" value={form.max_failed_subjects} onChange={(e) => set('max_failed_subjects', Number(e.target.value))} />
+            </Field>
+            <Field label="سقف درجة الدور الثاني" hint="اتركه فارغاً بدون سقف (لا يطبق على المؤجل بعذر)">
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                dir="ltr"
+                className="text-center"
+                placeholder="بدون سقف"
+                value={form.second_round_cap ?? ''}
+                onChange={(e) => set('second_round_cap', e.target.value === '' ? null : Number(e.target.value))}
+              />
             </Field>
           </div>
         </div>
@@ -335,6 +354,7 @@ function DepartmentsCard() {
               <th>الرمز</th>
               <th>الدراسة</th>
               <th className="text-center">المراحل</th>
+              <th>رئيس القسم</th>
               <th />
             </tr>
           </thead>
@@ -352,6 +372,7 @@ function DepartmentsCard() {
                   </div>
                 </td>
                 <td className="text-center tabular-nums">{d.stages}</td>
+                <td className="text-sm">{d.head_name || <span className="text-warning">غير محدد</span>}</td>
                 <td>
                   <div className="flex justify-end">
                     <IconButton label="تعديل" onClick={() => setEdit(d)}>
@@ -391,6 +412,9 @@ function DepartmentsCard() {
           >
             <Field label="اسم القسم">
               <Input value={edit.name ?? ''} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="تقنيات …" />
+            </Field>
+            <Field label="اسم رئيس القسم (مع اللقب العلمي)" hint="يُطبع أسفل نتيجة الطالب مكان التوقيع">
+              <Input value={edit.head_name ?? ''} onChange={(e) => setEdit({ ...edit, head_name: e.target.value })} placeholder="أ.م.د. …" />
             </Field>
             <div className="grid grid-cols-3 gap-3">
               <Field label="الرمز (إنجليزي)">

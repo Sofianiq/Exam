@@ -1,8 +1,9 @@
 // بيانات تجريبية وهمية بالكامل (أسماء مولّدة عشوائياً) لعرض النظام دون خادم
-import { cwTheoryMax, finalMaxOf } from '../lib/calc'
+import { computeRow, cwTheoryMax, finalMaxOf } from '../lib/calc'
 import type {
   AcademicYear,
   AuditEntry,
+  CurriculumItem,
   Department,
   Grade,
   Profile,
@@ -28,11 +29,12 @@ export interface DemoDB {
   subjects: Subject[]
   grades: Grade[]
   audit: AuditEntry[]
+  curriculum: CurriculumItem[]
   auditSeq: number
   sessionUserId: string | null
 }
 
-export const DEMO_VERSION = 3
+export const DEMO_VERSION = 4
 export const DEMO_PASSWORD = '123456'
 
 function mulberry32(seed: number) {
@@ -71,10 +73,50 @@ interface SubjectSeed {
   term: Term
   teachers: string[]
   theoryOnly?: boolean
+  units?: number
   status: SubjectStatus
   fill: number
   note?: string
+  /** حالة قائمة الدور الثاني ونسبة من أُدخلت درجاتهم من المكملين */
+  r2Status?: SubjectStatus
+  r2Fill?: number
 }
+
+// الخطة الدراسية لقسم تقنيات صحة المجتمع (المرحلتان الأولى والثانية) — نفس بيانات supabase/schema.sql
+type PlanRow = [stage: number, term: Term, name: string, nameEn: string, category: string, language: string, th: number, pr: number, units: number]
+export const CHT_PLAN: PlanRow[] = [
+  [1, 1, 'تقنيات الأجهزة الطبية', 'Techniques for Medical Device', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 1, 'علم الاحياء المجهرية الطبية 1', 'Medical Microbiology 1', 'تخصصية / مساعدة', 'English', 2, 4, 4],
+  [1, 1, 'مبادئ صحة المجتمع 1', 'Principles of Community Health 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 1, 'الكيمياء السريرية 1', 'Clinical Chemistry 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 1, 'التشريح العام 1', 'General Anatomy 1', 'تخصصية / مساعدة', 'English', 2, 4, 4],
+  [1, 1, 'علم وظائف الاعضاء 1', 'Physiology 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 1, 'مصطلحات طبية', 'Medical Terminology (1)', 'عامة', 'English', 1, 0, 1],
+  [1, 1, 'حقوق الانسان والديمقراطية', 'Human Rights and Democracy', 'عامة', 'العربية', 2, 0, 2],
+  [1, 1, 'اللغة العربية', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1],
+  [1, 2, 'علم الاحياء المجهرية الطبية 2', 'Medical Microbiology 2', 'تخصصية / مساعدة', 'English', 2, 4, 4],
+  [1, 2, 'مبادئ صحة المجتمع 2', 'Principles of Community Health 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 2, 'الكيمياء السريرية 2', 'Clinical Chemistry 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 2, 'التشريح العام 2', 'General Anatomy 2', 'تخصصية / مساعدة', 'English', 2, 4, 4],
+  [1, 2, 'علم وظائف الاعضاء 2', 'Physiology 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [1, 2, 'اللغة العربية', 'Arabic Language', 'عامة', 'العربية', 1, 0, 1],
+  [1, 2, 'مبادئ الحاسوب', 'Computer Fundamentals', 'عامة', 'العربية', 1, 2, 2],
+  [2, 1, 'علم التغذية 1', 'Nutrition 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 1, 'امراض انتقالية 1', 'Communicable Diseases 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 1, 'علم الدوائيات 1', 'Pharmacology 1', 'تخصصية / مساعدة', 'English', 2, 2, 3],
+  [2, 1, 'علم الوبائيات 1', 'Epidemiology 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 1, 'صحة بيئة 1', 'Environmental Health 1', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 1, 'تطبيقات الحاسوب', 'Computer Applications', 'عامة', 'العربية', 1, 2, 2],
+  [2, 1, 'جرائم نظام البعث في العراق', 'Crimes of the Baath Regime in Iraq', 'عامة', 'العربية', 2, 0, 2],
+  [2, 1, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1],
+  [2, 2, 'علم التغذية 2', 'Nutrition 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 2, 'امراض انتقالية 2', 'Communicable Diseases 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 2, 'علم الدوائيات 2', 'Pharmacology 2', 'تخصصية / مساعدة', 'English', 2, 2, 3],
+  [2, 2, 'علم الوبائيات 2', 'Epidemiology 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 2, 'إحصاء طبي حياتي', 'Biostatistics', 'تخصصية / اساسية', 'English', 2, 2, 3],
+  [2, 2, 'صحة بيئة 2', 'Environmental Health 2', 'تخصصية / اساسية', 'English', 2, 4, 4],
+  [2, 2, 'اللغة العربية', 'Arabic Language', 'عامة', 'العربية', 1, 0, 1],
+]
 
 export function createDemoDB(): DemoDB {
   const rand = mulberry32(20262027)
@@ -86,29 +128,31 @@ export function createDemoDB(): DemoDB {
     { id: 'y-2026', label: '2026-2027' },
   ]
   const departments: Department[] = [
-    { id: 'd-ans', name: 'تقنيات التخدير', code: 'ANS', has_evening: true, stages: 4, entry_open: true, sort: 1 },
-    { id: 'd-rad', name: 'تقنيات الأشعة والسونار', code: 'RAD', has_evening: true, stages: 4, entry_open: true, sort: 2 },
-    { id: 'd-den', name: 'تقنيات صناعة الأسنان', code: 'DEN', has_evening: false, stages: 4, entry_open: true, sort: 3 },
-    { id: 'd-cht', name: 'تقنيات صحة المجتمع', code: 'CHT', has_evening: true, stages: 4, entry_open: true, sort: 4 },
-    { id: 'd-cos', name: 'تقنيات التجميل والليزر', code: 'COS', has_evening: false, stages: 4, entry_open: true, sort: 5 },
+    { id: 'd-ans', name: 'تقنيات التخدير', code: 'ANS', has_evening: true, stages: 4, entry_open: true, sort: 1, head_name: 'أ.م.د. فراس عبد الأمير الحلي' },
+    { id: 'd-rad', name: 'تقنيات الأشعة والسونار', code: 'RAD', has_evening: true, stages: 4, entry_open: true, sort: 2, head_name: 'م.د. سعد جبار الحسني' },
+    { id: 'd-den', name: 'تقنيات صناعة الأسنان', code: 'DEN', has_evening: false, stages: 4, entry_open: true, sort: 3, head_name: 'م.د. هالة عدنان القيسي' },
+    { id: 'd-cht', name: 'تقنيات صحة المجتمع', code: 'CHT', has_evening: true, stages: 4, entry_open: true, sort: 4, head_name: 'أ.م.د. وسام كريم العزاوي' },
+    { id: 'd-cos', name: 'تقنيات التجميل والليزر', code: 'COS', has_evening: false, stages: 4, entry_open: true, sort: 5, head_name: 'م.د. ريم ماجد الطائي' },
   ]
   const settings: Settings = {
     university_name: 'جامعة السراج الأهلية',
     college_name: 'كلية التقنيات الصحية والطبية',
     entry_open: true,
     pass_mark: 50,
-    rounding: 'none',
+    rounding: 'round',
     grade_scale: [
       { min: 90, label: 'امتياز' },
       { min: 80, label: 'جيد جداً' },
       { min: 70, label: 'جيد' },
       { min: 60, label: 'متوسط' },
       { min: 50, label: 'مقبول' },
-      { min: 0, label: 'راسب' },
+      { min: 0, label: 'ضعيف' },
     ],
-    average_mode: 'simple',
+    average_mode: 'weighted',
     idle_minutes: 60,
     current_year_id: 'y-2026',
+    second_round_cap: null,
+    max_failed_subjects: 2,
   }
 
   const person = (id: string, username: string, full_name: string, role: Role, department_id: string | null, title: string | null): DemoProfile => ({
@@ -179,6 +223,8 @@ export function createDemoDB(): DemoDB {
     }))
     students.push(...cls)
     const ability = new Map(cls.map((s) => [s.id, Math.max(30, Math.min(98, 72 + (rand() + rand() + rand() - 1.5) * 30))]))
+    // طلبة على حافة النجاح ليظهر في البيانات التجريبية «المكمل» في مادة أو مادتين
+    ;[4, 9, 15].forEach((i) => cls[i] && ability.set(cls[i].id, 56))
 
     subs.forEach((seed, idx) => {
       const coursework_max = seed.theoryOnly ? 30 : 40
@@ -193,7 +239,7 @@ export function createDemoDB(): DemoDB {
         term: seed.term,
         name: seed.name,
         code: null,
-        units: seed.theoryOnly ? 2 : 3,
+        units: seed.units ?? (seed.theoryOnly ? 2 : 3),
         teacher_ids: seed.teachers,
         coursework_max,
         cw_practical_max,
@@ -206,6 +252,11 @@ export function createDemoDB(): DemoDB {
         reviewed_at: seed.status === 'approved' || seed.status === 'returned' ? iso(60 * 5 + idx * 20) : null,
         reviewed_by: seed.status === 'approved' || seed.status === 'returned' ? 'u-cmt' : null,
         sort: idx + 1,
+        r2_status: seed.r2Status ?? 'draft',
+        r2_note: null,
+        r2_submitted_at: seed.r2Status && seed.r2Status !== 'draft' ? iso(60 * 3) : null,
+        r2_reviewed_at: seed.r2Status === 'approved' ? iso(60 * 2) : null,
+        r2_reviewed_by: seed.r2Status === 'approved' ? 'u-cmt' : null,
       }
       subjects.push(subj)
       const filled = Math.round(cls.length * seed.fill)
@@ -215,7 +266,7 @@ export function createDemoDB(): DemoDB {
         let special: SpecialCode | null = null
         if (seed.fill === 1 && i === 7 && idx % 2 === 0) special = 'absent'
         if (seed.fill === 1 && i === 15 && idx === 1) special = 'banned'
-        grades.push({
+        const g: Grade = {
           subject_id: subj.id,
           student_id: st.id,
           cw_theory: v(cwTheoryMax(subj)),
@@ -224,9 +275,20 @@ export function createDemoDB(): DemoDB {
           final_theory: special ? null : v(subj.final_max),
           special,
           note: null,
+          r2_final_practical: null,
+          r2_final_theory: null,
+          r2_special: null,
           updated_at: iso(60 * 24 + i),
           updated_by: seed.teachers[0] ?? null,
-        })
+        }
+        // الدور الثاني للمكملين (السعي ثابت، أداء أفضل قليلاً في الامتحان الثاني)
+        if (seed.r2Fill && computeRow(subj, g, settings).needsR2 && rand() < seed.r2Fill) {
+          const b = Math.min(0.95, a + 0.2)
+          const r2 = (max: number) => (max > 0 ? Math.max(0, Math.min(max, Math.round(max * (b + (rand() - 0.5) * 0.2)))) : null)
+          g.r2_final_practical = r2(subj.practical_max)
+          g.r2_final_theory = r2(subj.final_max)
+        }
+        grades.push(g)
       })
       if (seed.status !== 'draft') log(60 * 20 + idx * 30, seed.teachers[0] ?? 'u-rad-h', 'subject.submitted', dept, `${seed.name} — إرسال إلى اللجنة`)
       if (seed.status === 'approved') log(60 * 5 + idx * 20, 'u-cmt', 'subject.approved', dept, `${seed.name} — اعتماد`)
@@ -254,12 +316,40 @@ export function createDemoDB(): DemoDB {
     { name: 'علم الحاسوب', term: 1, teachers: ['u-ans1'], status: 'draft', fill: 0 },
     { name: 'اللغة العربية', term: 1, teachers: ['u-gen1'], theoryOnly: true, status: 'draft', fill: 1 },
   ])
-  addClass('d-cht', 3, 'evening', 18, [
-    { name: 'علم الأوبئة', term: 1, teachers: ['u-cht1'], status: 'draft', fill: 0.4 },
-    { name: 'الإحصاء الحيوي', term: 1, teachers: ['u-cht1'], status: 'approved', fill: 1 },
-    { name: 'صحة البيئة', term: 1, teachers: ['u-cht1'], status: 'draft', fill: 0 },
-    { name: 'التغذية العلاجية', term: 1, teachers: ['u-cht1'], theoryOnly: true, status: 'submitted', fill: 1 },
-  ])
+  // قسم صحة المجتمع — المرحلة الثانية: مواد الخطة الدراسية الرسمية، الفصل الأول معتمد مع دور ثانٍ
+  const chtTeacher = (name: string) => (/اللغة|البعث|الحاسوب|حقوق/.test(name) ? ['u-gen1'] : ['u-cht1'])
+  addClass(
+    'd-cht',
+    2,
+    'morning',
+    24,
+    CHT_PLAN.filter(([stage]) => stage === 2).map<SubjectSeed>(([, term, name, , , , , pr, units], i) => ({
+      name,
+      term,
+      units,
+      theoryOnly: pr === 0,
+      teachers: chtTeacher(name),
+      status: term === 1 ? 'approved' : 'draft',
+      fill: term === 1 ? 1 : 0,
+      r2Status: term === 1 ? (i < 4 ? 'approved' : 'draft') : undefined,
+      r2Fill: term === 1 ? (i < 4 ? 1 : 0) : undefined,
+    })),
+  )
+
+  const curriculum: CurriculumItem[] = CHT_PLAN.map(([stage, term, name, name_en, category, language, th, pr, units], i) => ({
+    id: `cur-${i + 1}`,
+    department_id: 'd-cht',
+    stage,
+    term,
+    sort: i + 1,
+    name,
+    name_en,
+    category,
+    language,
+    theory_hours: th,
+    practical_hours: pr,
+    units,
+  }))
 
   audit.sort((a, b) => a.at.localeCompare(b.at))
   audit.forEach((a, i) => (a.id = i + 1))
@@ -274,6 +364,7 @@ export function createDemoDB(): DemoDB {
     subjects,
     grades,
     audit,
+    curriculum,
     auditSeq: audit.length,
     sessionUserId: null,
   }
@@ -284,6 +375,6 @@ export const DEMO_ACCOUNTS: { username: string; role: Role; hint: string }[] = [
   { username: 'dean', role: 'dean', hint: 'كل الأقسام' },
   { username: 'vice', role: 'assistant_dean', hint: 'فتح وغلق الإدخال' },
   { username: 'committee', role: 'committee', hint: 'تدقيق واعتماد' },
-  { username: 'rad.head', role: 'head', hint: 'قسم الأشعة والسونار' },
+  { username: 'cht.head', role: 'head', hint: 'قسم صحة المجتمع' },
   { username: 'rad01', role: 'teacher', hint: 'إدخال درجات مواده' },
 ]
