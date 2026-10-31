@@ -14,6 +14,7 @@ import {
   Menu,
   Moon,
   Settings as SettingsIcon,
+  UserSearch,
   Sun,
   Users,
   X,
@@ -51,13 +52,14 @@ export function Layout() {
     queryFn: () => backend.listProgress(s.yearId),
     enabled: !!s.yearId && canReview(profile),
   })
-  const pendingReview = progressQ.data?.filter((p) => p.status === 'submitted').length ?? 0
+  const pendingReview = progressQ.data?.filter((p) => p.status === 'submitted' || (p.status === 'approved' && p.r2_status === 'submitted')).length ?? 0
 
   const items: NavItem[] = [{ to: '/', label: 'لوحة المتابعة', icon: <LayoutDashboard className="size-4.5" />, end: true }]
   if (profile.role === 'teacher') items.push({ to: '/my-subjects', label: 'موادي الدراسية', icon: <BookOpenCheck className="size-4.5" /> })
   if (canViewAll(profile)) items.push({ to: '/departments', label: 'الأقسام العلمية', icon: <Building2 className="size-4.5" /> })
   if (profile.role === 'head' && profile.department_id)
     items.push({ to: `/departments/${profile.department_id}`, label: 'قسمي', icon: <Building2 className="size-4.5" /> })
+  if (canSeeAudit(profile)) items.push({ to: '/students', label: 'البحث عن طالب', icon: <UserSearch className="size-4.5" /> })
   if (canReview(profile)) items.push({ to: '/review', label: 'التدقيق والاعتماد', icon: <ClipboardCheck className="size-4.5" />, badge: pendingReview })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/progress', label: 'تقرير الإنجاز', icon: <FileBarChart2 className="size-4.5" /> })
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })

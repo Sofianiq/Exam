@@ -11,6 +11,7 @@ import {
   canViewAll,
   canWriteSubject,
   gradeEditBlock,
+  gradeEditBlockR2,
   isSuper,
 } from '../lib/perm'
 import type {
@@ -20,10 +21,13 @@ import type {
   AuditEntry,
   AuditFilter,
   ClassKey,
+  CurriculumInput,
+  CurriculumItem,
   Department,
   Grade,
   GradeRowInput,
   Profile,
+  Round,
   Settings,
   Student,
   Subject,
@@ -223,10 +227,26 @@ export class DemoBackend implements Backend {
     if (this.db.departments.some((x) => x.id !== d.id && (x.name === name || x.code === code))) fail('يوجد قسم بنفس الاسم أو الرمز.')
     if (d.id) {
       const cur = this.dept(d.id) ?? fail('القسم غير موجود')
-      Object.assign(cur, { name, code, has_evening: d.has_evening ?? cur.has_evening, stages: d.stages ?? cur.stages, sort: d.sort ?? cur.sort })
+      Object.assign(cur, {
+        name,
+        code,
+        has_evening: d.has_evening ?? cur.has_evening,
+        stages: d.stages ?? cur.stages,
+        sort: d.sort ?? cur.sort,
+        head_name: d.head_name === undefined ? cur.head_name : d.head_name?.trim() || null,
+      })
       this.audit('department.update', 'department', cur.id, null, name)
     } else {
-      const nd: Department = { id: demoId('d'), name, code, has_evening: d.has_evening ?? false, stages: d.stages ?? 4, entry_open: true, sort: d.sort ?? this.db.departments.length + 1 }
+      const nd: Department = {
+        id: demoId('d'),
+        name,
+        code,
+        has_evening: d.has_evening ?? false,
+        stages: d.stages ?? 4,
+        entry_open: true,
+        sort: d.sort ?? this.db.departments.length + 1,
+        head_name: d.head_name?.trim() || null,
+      }
       this.db.departments.push(nd)
       this.audit('department.create', 'department', nd.id, null, name)
     }
@@ -239,6 +259,7 @@ export class DemoBackend implements Backend {
     const d = this.dept(id) ?? fail('القسم غير موجود')
     this.cascadeDelete((s) => s.department_id === id, (st) => st.department_id === id)
     this.db.departments = this.db.departments.filter((x) => x.id !== id)
+    this.db.curriculum = this.db.curriculum.filter((c) => c.department_id !== id)
     this.db.profiles.forEach((p) => {
       if (p.department_id === id) p.department_id = null
     })
@@ -361,6 +382,26 @@ export class DemoBackend implements Backend {
     const me = this.me()
     if (!this.canSeeClass(me, k)) return []
     return clone(this.db.students.filter((s) => sameClass(s, k)).sort((a, b) => a.seq - b.seq))
+  }
+
+  async getStudent(id: string): Promise<Student | null> {
+    await wait(10)
+    const me = this.me()
+    const st = this.db.students.find((x) => x.id === id)
+    return st && this.canSeeClass(me, st) ? clone(st) : null
+  }
+
+  async searchStudents(yearId: string, query: string): Promise<Student[]> {
+    await wait(20)
+    const me = this.me()
+    const t = normalizeArabic(query)
+    if (t.length < 2) return []
+    return clone(
+      this.db.students
+        .filter((x) => x.year_id === yearId && normalizeArabic(x.full_name).includes(t) && this.canSeeClass(me, x))
+        .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ar'))
+        .slice(0, 60),
+    )
   }
 
   async addStudents(k: ClassKey, names: string[]) {
@@ -507,6 +548,11 @@ export class DemoBackend implements Backend {
       submitted_by: null,
       reviewed_at: null,
       reviewed_by: null,
+      r2_status: 'draft',
+      r2_note: null,
+      r2_submitted_at: null,
+      r2_reviewed_at: null,
+      r2_reviewed_by: null,
     }
     this.db.subjects.push(s)
     this.audit('subject.create', 'subject', s.id, s.department_id, s.name)
@@ -547,6 +593,11 @@ export class DemoBackend implements Backend {
         submitted_by: null,
         reviewed_at: null,
         reviewed_by: null,
+        r2_status: 'draft',
+        r2_note: null,
+        r2_submitted_at: null,
+        r2_reviewed_at: null,
+        r2_reviewed_by: null,
       }
       this.db.subjects.push(c)
       this.audit('subject.create', 'subject', c.id, c.department_id, c.name)
@@ -556,41 +607,58 @@ export class DemoBackend implements Backend {
     return n
   }
 
-  async setSubjectStatus(id: string, status: SubjectStatus, note?: string | null): Promise<void> {
+  async setSubjectStatus(id: string, status: SubjectStatus, note?: string | null, round: Round = 1): Promise<void> {
     await wait()
     const me = this.me()
     const s = this.db.subjects.find((x) => x.id === id) ?? fail('المادة غير موجودة')
     const n = note?.trim() || null
     const sup = isSuper(me)
+    if (round === 2 && s.status !== 'approved') fail('يجب اعتماد نتائج الدور الأول قبل إجراءات الدور الثاني')
+    const cur = round === 1 ? s.status : s.r2_status
     if (status === 'submitted') {
-      if (s.status !== 'draft' && s.status !== 'returned') fail('لا يمكن إرسال القائمة في حالتها الحالية')
-      const block = gradeEditBlock(me, s, this.db.settings, this.dept(s.department_id))
+      if (cur !== 'draft' && cur !== 'returned') fail('لا يمكن إرسال القائمة في حالتها الحالية')
+      const dept = this.dept(s.department_id)
+      const block = round === 1 ? gradeEditBlock(me, s, this.db.settings, dept) : gradeEditBlockR2(me, s, this.db.settings, dept)
       if (block) fail(block)
     } else if (status === 'approved' || status === 'returned') {
       if (!canReview(me)) fail('التدقيق والاعتماد من صلاحية اللجنة الامتحانية والإدارة')
-      if (status === 'approved' && s.status === 'approved') fail('القائمة معتمدة مسبقاً')
-      if (status === 'approved' && s.status !== 'submitted' && me.role === 'committee') fail('لا يمكن اعتماد قائمة لم تُرسل بعد')
-      if (status === 'returned' && s.status === 'approved' && !sup) fail('إعادة فتح قائمة معتمدة من صلاحية الإدارة العليا فقط')
-      if (status === 'returned' && s.status !== 'submitted' && s.status !== 'approved') fail('لا يمكن إعادة قائمة لم تُرسل')
+      if (status === 'approved' && cur === 'approved') fail('القائمة معتمدة مسبقاً')
+      if (status === 'approved' && cur !== 'submitted' && me.role === 'committee') fail('لا يمكن اعتماد قائمة لم تُرسل بعد')
+      if (status === 'returned' && cur === 'approved' && !sup) fail('إعادة فتح قائمة معتمدة من صلاحية الإدارة العليا فقط')
+      if (status === 'returned' && cur !== 'submitted' && cur !== 'approved') fail('لا يمكن إعادة قائمة لم تُرسل')
       if (status === 'returned' && !n) fail('يرجى كتابة ملاحظة توضح سبب الإعادة')
     } else if (status === 'draft') {
       if (!sup) fail('إعادة القائمة إلى مسودة من صلاحية الإدارة العليا فقط')
     }
-    const from = s.status
     const now = new Date().toISOString()
-    s.status = status
-    if (status === 'submitted') {
-      s.submitted_at = now
-      s.submitted_by = me.id
+    if (round === 1) {
+      s.status = status
+      if (status === 'submitted') {
+        s.submitted_at = now
+        s.submitted_by = me.id
+      } else {
+        s.status_note = n
+      }
+      if (status === 'approved' || status === 'returned') {
+        s.reviewed_at = now
+        s.reviewed_by = me.id
+      }
     } else {
-      s.status_note = n
-    }
-    if (status === 'approved' || status === 'returned') {
-      s.reviewed_at = now
-      s.reviewed_by = me.id
+      s.r2_status = status
+      if (status === 'submitted') s.r2_submitted_at = now
+      else s.r2_note = n
+      if (status === 'approved' || status === 'returned') {
+        s.r2_reviewed_at = now
+        s.r2_reviewed_by = me.id
+      }
     }
     const suffix = { submitted: ' — إرسال إلى اللجنة', approved: ' — اعتماد', returned: ' — إعادة للتعديل', draft: ' — إعادة إلى مسودة' }[status]
-    this.audit(`subject.${status}`, 'subject', s.id, s.department_id, s.name + suffix, { from, to: status, note: n })
+    this.audit(`subject.${status}`, 'subject', s.id, s.department_id, s.name + suffix + (round === 2 ? ' (الدور الثاني)' : ''), {
+      from: cur,
+      to: status,
+      note: n,
+      round,
+    })
     this.persist()
   }
 
@@ -608,15 +676,17 @@ export class DemoBackend implements Backend {
     await wait(120)
     const me = this.me()
     const s = this.db.subjects.find((x) => x.id === subjectId) ?? fail('المادة غير موجودة')
-    const block = gradeEditBlock(me, s, this.db.settings, this.dept(s.department_id))
-    if (block) fail(block)
     if (!canWriteSubject(me, s)) fail('ليست لديك صلاحية على درجات هذه المادة')
+    const dept = this.dept(s.department_id)
+    const r1Block = gradeEditBlock(me, s, this.db.settings, dept)
+    const r2Block = gradeEditBlockR2(me, s, this.db.settings, dept)
     const why = reason?.trim() || null
-    if (s.status === 'approved' && !why) fail('تعديل قائمة معتمدة يتطلب ذكر سبب التعديل')
     const tmax = cwTheoryMax(s)
     const check = (v: number | null, max: number, label: string) => {
       if (v != null && (v < 0 || v > max)) fail(`درجة ${label} يجب أن تكون بين 0 و ${max}`)
     }
+    const R1 = ['cw_theory', 'cw_practical', 'final_practical', 'final_theory', 'special', 'note'] as const
+    const R2 = ['r2_final_practical', 'r2_final_theory', 'r2_special'] as const
     // تحقق كامل قبل أي كتابة (كالمعاملة في قاعدة البيانات)
     const prepared = rows.map((r) => {
       const st = this.db.students.find((x) => x.id === r.student_id)
@@ -628,20 +698,40 @@ export class DemoBackend implements Backend {
         final_theory: s.final_max > 0 ? r.final_theory : null,
         special: r.special || null,
         note: r.note?.trim() || null,
+        r2_final_practical: s.practical_max > 0 ? (r.r2_final_practical ?? null) : null,
+        r2_final_theory: s.final_max > 0 ? (r.r2_final_theory ?? null) : null,
+        r2_special: r.r2_special || null,
       }
       check(v.cw_theory, tmax, 'السعي (النظري)')
       check(v.cw_practical, s.cw_practical_max, 'السعي (العملي)')
       check(v.final_practical, s.practical_max, 'العملي النهائي')
       check(v.final_theory, s.final_max, 'الامتحان النهائي')
-      return { st: st!, v }
+      check(v.r2_final_practical, s.practical_max, 'العملي النهائي (الدور الثاني)')
+      check(v.r2_final_theory, s.final_max, 'الامتحان النهائي (الدور الثاني)')
+      const cur = this.db.grades.find((g) => g.subject_id === subjectId && g.student_id === st!.id)
+      const r1Changed = !cur || R1.some((f) => (cur[f] ?? null) !== v[f])
+      const r2Changed = cur ? R2.some((f) => (cur[f] ?? null) !== v[f]) : R2.some((f) => v[f] != null)
+      if (r1Changed) {
+        if (r1Block) fail(r1Block)
+        if (s.status === 'approved' && !why) fail('تعديل قائمة معتمدة يتطلب ذكر سبب التعديل')
+      }
+      if (r2Changed) {
+        if (r2Block) fail(r2Block)
+        if (s.r2_status === 'approved' && !why) fail('تعديل قائمة الدور الثاني المعتمدة يتطلب ذكر سبب التعديل')
+      }
+      if (R2.some((f) => v[f] != null)) {
+        const res = computeRow(s, v, this.db.settings)
+        if (v.special == null && res.total == null) fail('درجات الدور الأول للطالب غير مكتملة')
+        if (v.special == null && res.total != null && res.total >= this.db.settings.pass_mark) fail('الطالب ناجح في الدور الأول ولا يحتاج إلى دور ثانٍ')
+      }
+      return { st: st!, v, cur, changed: r1Changed || r2Changed }
     })
     const now = new Date().toISOString()
-    for (const { st, v } of prepared) {
-      const cur = this.db.grades.find((g) => g.subject_id === subjectId && g.student_id === st.id)
-      const fields = ['cw_theory', 'cw_practical', 'final_practical', 'final_theory', 'special', 'note'] as const
+    const fields = [...R1, ...R2]
+    for (const { st, v, cur, changed } of prepared) {
+      if (!changed) continue
       if (cur) {
-        if (fields.every((f) => cur[f] === v[f])) continue
-        const old = Object.fromEntries(fields.map((f) => [f, cur[f]]))
+        const old = Object.fromEntries(fields.map((f) => [f, cur[f] ?? null]))
         Object.assign(cur, v, { updated_at: now, updated_by: me.id })
         this.audit('grade.update', 'grade', subjectId, s.department_id, `${s.name} — ${st.full_name}`, { subject_id: subjectId, student_id: st.id, old, new: v, reason: why })
       } else {
@@ -679,8 +769,54 @@ export class DemoBackend implements Backend {
           n_fail: totals.filter((t) => t < st.pass_mark).length,
           n_special: rs.filter((r) => r.special != null).length,
           avg_total: totals.length ? round2(totals.reduce((a, b) => a + b, 0) / totals.length) : null,
+          r2_status: s.r2_status,
+          n_r2_needed: rs.filter((r) => r.complete && r.needsR2).length,
+          n_r2_done: rs.filter((r) => r.complete && r.needsR2 && r.r2Complete).length,
         }
       })
+  }
+
+  // ---------- الخطة الدراسية ----------
+  async listCurriculum(departmentId: string): Promise<CurriculumItem[]> {
+    await wait(15)
+    this.me()
+    return clone(
+      this.db.curriculum
+        .filter((c) => c.department_id === departmentId)
+        .sort((a, b) => a.stage - b.stage || a.term - b.term || a.sort - b.sort),
+    )
+  }
+
+  async saveCurriculum(c: CurriculumInput): Promise<void> {
+    await wait()
+    const me = this.me()
+    if (!canManageDepartment(me, c.department_id)) fail('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
+    const name = c.name.trim()
+    if (!name) fail('اسم المادة مطلوب')
+    if (this.db.curriculum.some((x) => x.id !== c.id && x.department_id === c.department_id && x.stage === c.stage && x.term === c.term && x.name === name)) {
+      fail('توجد مادة بنفس الاسم في هذه المرحلة والفصل من الخطة.')
+    }
+    const item: CurriculumItem = {
+      ...c,
+      id: c.id ?? demoId('cur'),
+      name,
+      name_en: c.name_en?.trim() || null,
+      category: c.category?.trim() || null,
+      language: c.language?.trim() || null,
+    }
+    const i = this.db.curriculum.findIndex((x) => x.id === item.id)
+    if (i >= 0) this.db.curriculum[i] = item
+    else this.db.curriculum.push(item)
+    this.persist()
+  }
+
+  async deleteCurriculum(id: string): Promise<void> {
+    await wait()
+    const me = this.me()
+    const c = this.db.curriculum.find((x) => x.id === id) ?? fail('المادة غير موجودة في الخطة')
+    if (!canManageDepartment(me, c.department_id)) fail('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
+    this.db.curriculum = this.db.curriculum.filter((x) => x.id !== id)
+    this.persist()
   }
 
   async listAudit(f: AuditFilter): Promise<AuditEntry[]> {
@@ -718,6 +854,7 @@ export class DemoBackend implements Backend {
       students: clone(this.db.students),
       subjects: clone(this.db.subjects),
       grades: clone(this.db.grades),
+      curriculum: clone(this.db.curriculum),
     }
   }
 

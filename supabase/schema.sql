@@ -49,9 +49,9 @@ create table if not exists public.settings (
   college_name     text not null default 'كلية التقنيات الصحية والطبية',
   entry_open       boolean not null default true,
   pass_mark        numeric(5,2) not null default 50,
-  rounding         text not null default 'none' check (rounding in ('none','round','ceil')),
-  grade_scale      jsonb not null default '[{"min":90,"label":"امتياز"},{"min":80,"label":"جيد جداً"},{"min":70,"label":"جيد"},{"min":60,"label":"متوسط"},{"min":50,"label":"مقبول"},{"min":0,"label":"راسب"}]',
-  average_mode     text not null default 'simple' check (average_mode in ('simple','weighted')),
+  rounding         text not null default 'round' check (rounding in ('none','round','ceil')),
+  grade_scale      jsonb not null default '[{"min":90,"label":"امتياز"},{"min":80,"label":"جيد جداً"},{"min":70,"label":"جيد"},{"min":60,"label":"متوسط"},{"min":50,"label":"مقبول"},{"min":0,"label":"ضعيف"}]',
+  average_mode     text not null default 'weighted' check (average_mode in ('simple','weighted')),
   idle_minutes     int not null default 60 check (idle_minutes between 5 and 600),
   current_year_id  uuid references public.academic_years (id) on delete set null,
   updated_at       timestamptz not null default now()
@@ -116,6 +116,38 @@ create table if not exists public.grades (
   primary key (subject_id, student_id)
 );
 create index if not exists grades_student_idx on public.grades (student_id);
+
+-- الخطة الدراسية لكل قسم (تُستورد منها المواد في كل سنة دراسية)
+create table if not exists public.curriculum (
+  id               uuid primary key default gen_random_uuid(),
+  department_id    uuid not null references public.departments (id) on delete cascade,
+  stage            smallint not null check (stage between 1 and 6),
+  term             smallint not null check (term in (1,2)),
+  sort             int not null default 0,
+  name             text not null check (length(trim(name)) > 0),
+  name_en          text,
+  category         text,
+  language         text,
+  theory_hours     numeric(4,1) not null default 0,
+  practical_hours  numeric(4,1) not null default 0,
+  units            numeric(4,1) not null default 0,
+  created_at       timestamptz not null default now(),
+  unique (department_id, stage, term, name)
+);
+
+-- ترقيات الإصدار الثاني: الدور الثاني، اسم رئيس القسم، قواعد النتيجة
+alter table public.departments add column if not exists head_name text;
+alter table public.settings add column if not exists second_round_cap numeric(5,2);
+alter table public.settings add column if not exists max_failed_subjects int not null default 2;
+alter table public.grades add column if not exists r2_final_practical numeric(5,2);
+alter table public.grades add column if not exists r2_final_theory numeric(5,2);
+alter table public.grades add column if not exists r2_special text check (r2_special in ('absent','postponed','banned'));
+alter table public.subjects add column if not exists r2_status text not null default 'draft'
+  check (r2_status in ('draft','submitted','returned','approved'));
+alter table public.subjects add column if not exists r2_note text;
+alter table public.subjects add column if not exists r2_submitted_at timestamptz;
+alter table public.subjects add column if not exists r2_reviewed_at timestamptz;
+alter table public.subjects add column if not exists r2_reviewed_by uuid;
 
 create table if not exists public.audit_log (
   id             bigint generated always as identity primary key,
@@ -208,6 +240,29 @@ begin
   return null;
 end $$;
 
+-- سبب منع تعديل درجات الدور الثاني (null = مسموح)
+create or replace function public.grade_r2_block_reason(p_subject_id uuid) returns text
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  s public.subjects;
+  v_global boolean;
+  v_dept boolean;
+begin
+  select * into s from public.subjects where id = p_subject_id;
+  if not found then return 'المادة غير موجودة'; end if;
+  if public.my_role() is null then return 'الحساب غير مفعل'; end if;
+  if not public.can_write_subject(p_subject_id) then return 'ليست لديك صلاحية على درجات هذه المادة'; end if;
+  if s.status <> 'approved' then return 'يجب اعتماد نتائج الدور الأول قبل إدخال درجات الدور الثاني'; end if;
+  if public.is_super() then return null; end if;
+  select entry_open into v_global from public.settings where id = 1;
+  select entry_open into v_dept from public.departments where id = s.department_id;
+  if not coalesce(v_global, true) then return 'إدخال الدرجات مغلق حالياً من قبل الإدارة'; end if;
+  if not coalesce(v_dept, true) then return 'إدخال الدرجات مغلق لهذا القسم'; end if;
+  if s.r2_status = 'submitted' then return 'قائمة الدور الثاني مرسلة إلى اللجنة الامتحانية ولا يمكن تعديلها'; end if;
+  if s.r2_status = 'approved' then return 'قائمة الدور الثاني معتمدة ولا يمكن تعديلها'; end if;
+  return null;
+end $$;
+
 -- ---------------------------------------------------------------------
 -- 3) حساب الدرجات
 -- ---------------------------------------------------------------------
@@ -231,6 +286,24 @@ language sql stable set search_path = '' as $$
       or (s.final_max > 0 and g.final_theory is null) then null
     else public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0)
                              + coalesce(g.final_practical,0) + coalesce(g.final_theory,0))
+  end
+$$;
+
+-- مجموع الدور الثاني: السعي ثابت + درجات الامتحان النهائي للدور الثاني
+-- (يُطبق سقف الدور الثاني إن وُجد، إلا للمؤجل بعذر لأن دوره الثاني يُعد دوراً أول)
+create or replace function public.grade_r2_total(s public.subjects, g public.grades) returns numeric
+language sql stable set search_path = '' as $$
+  select case
+    when g.subject_id is null or g.r2_special is not null then null
+    when (s.coursework_max - s.cw_practical_max > 0 and g.cw_theory is null)
+      or (s.cw_practical_max > 0 and g.cw_practical is null)
+      or (s.practical_max > 0 and g.r2_final_practical is null)
+      or (s.final_max > 0 and g.r2_final_theory is null) then null
+    else least(
+      public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0)
+                          + coalesce(g.r2_final_practical,0) + coalesce(g.r2_final_theory,0)),
+      case when g.special = 'postponed' then 100
+           else coalesce((select second_round_cap from public.settings where id = 1), 100) end)
   end
 $$;
 
@@ -275,19 +348,53 @@ declare
   st public.students;
   v_reason text;
   v_cw_theory_max numeric;
+  v_r1 boolean;
+  v_r2 boolean;
+  v_total numeric;
+  v_has_reason boolean := coalesce(trim(current_setting('app.change_reason', true)), '') <> '';
 begin
   -- الحذف المتسلسل (عند حذف مادة أو طالب أو سنة) تم التحقق من صلاحيته على الجدول الأصل
   if tg_op = 'DELETE' and pg_trigger_depth() > 1 then return old; end if;
 
-  v_reason := public.grade_edit_block_reason(coalesce(new.subject_id, old.subject_id));
-  if v_reason is not null then
-    raise exception '%', v_reason using errcode = '42501';
+  -- في عملية الحفظ (insert ... on conflict) إذا كان السجل موجوداً فالتحقق يتم في قادح التعديل
+  -- الذي يرى القيم القديمة والجديدة معاً
+  if tg_op = 'INSERT' and exists (select 1 from public.grades g
+                                  where g.subject_id = new.subject_id and g.student_id = new.student_id) then
+    if not public.can_write_subject(new.subject_id) then
+      raise exception 'ليست لديك صلاحية على درجات هذه المادة' using errcode = '42501';
+    end if;
+    return new;
+  end if;
+
+  -- ما الذي تغيّر: درجات الدور الأول أم الدور الثاني؟ (لكل منهما صلاحياته وحالته)
+  if tg_op = 'UPDATE' then
+    v_r1 := (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note)
+            is distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note);
+    v_r2 := (old.r2_final_practical, old.r2_final_theory, old.r2_special)
+            is distinct from (new.r2_final_practical, new.r2_final_theory, new.r2_special);
+  elsif tg_op = 'INSERT' then
+    v_r1 := true;
+    v_r2 := (new.r2_final_practical, new.r2_final_theory, new.r2_special) is distinct from (null::numeric, null::numeric, null::text);
+  else
+    v_r1 := true;
+    v_r2 := false;
   end if;
 
   select * into s from public.subjects where id = coalesce(new.subject_id, old.subject_id);
 
-  if s.status = 'approved' and coalesce(trim(current_setting('app.change_reason', true)), '') = '' then
-    raise exception 'تعديل قائمة معتمدة يتطلب ذكر سبب التعديل' using errcode = '22023';
+  if v_r1 then
+    v_reason := public.grade_edit_block_reason(s.id);
+    if v_reason is not null then raise exception '%', v_reason using errcode = '42501'; end if;
+    if s.status = 'approved' and not v_has_reason then
+      raise exception 'تعديل قائمة معتمدة يتطلب ذكر سبب التعديل' using errcode = '22023';
+    end if;
+  end if;
+  if v_r2 then
+    v_reason := public.grade_r2_block_reason(s.id);
+    if v_reason is not null then raise exception '%', v_reason using errcode = '42501'; end if;
+    if s.r2_status = 'approved' and not v_has_reason then
+      raise exception 'تعديل قائمة الدور الثاني المعتمدة يتطلب ذكر سبب التعديل' using errcode = '22023';
+    end if;
   end if;
 
   if tg_op = 'DELETE' then return old; end if;
@@ -302,6 +409,8 @@ begin
   if s.cw_practical_max = 0 then new.cw_practical := null; end if;
   if s.practical_max = 0 then new.final_practical := null; end if;
   if s.final_max = 0 then new.final_theory := null; end if;
+  if s.practical_max = 0 then new.r2_final_practical := null; end if;
+  if s.final_max = 0 then new.r2_final_theory := null; end if;
   v_cw_theory_max := s.coursework_max - s.cw_practical_max;
   if v_cw_theory_max = 0 then new.cw_theory := null; end if;
 
@@ -316,6 +425,23 @@ begin
   end if;
   if new.final_theory < 0 or new.final_theory > s.final_max then
     raise exception 'درجة الامتحان النهائي يجب أن تكون بين 0 و %', s.final_max using errcode = '22023';
+  end if;
+  if new.r2_final_practical < 0 or new.r2_final_practical > s.practical_max then
+    raise exception 'درجة العملي النهائي (الدور الثاني) يجب أن تكون بين 0 و %', s.practical_max using errcode = '22023';
+  end if;
+  if new.r2_final_theory < 0 or new.r2_final_theory > s.final_max then
+    raise exception 'درجة الامتحان النهائي (الدور الثاني) يجب أن تكون بين 0 و %', s.final_max using errcode = '22023';
+  end if;
+
+  -- الدور الثاني للطلبة غير الناجحين في الدور الأول فقط (السعي الفصلي ثابت)
+  if (new.r2_final_practical, new.r2_final_theory, new.r2_special) is distinct from (null::numeric, null::numeric, null::text) then
+    v_total := public.grade_total(s, new);
+    if new.special is null and v_total is null then
+      raise exception 'درجات الدور الأول للطالب غير مكتملة' using errcode = '22023';
+    end if;
+    if new.special is null and v_total >= (select pass_mark from public.settings where id = 1) then
+      raise exception 'الطالب ناجح في الدور الأول ولا يحتاج إلى دور ثانٍ' using errcode = '22023';
+    end if;
   end if;
 
   new.updated_at := now();
@@ -336,19 +462,23 @@ declare
   v_new jsonb;
 begin
   if tg_op = 'DELETE' and pg_trigger_depth() > 1 then return null; end if;
-  if tg_op = 'UPDATE' and (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note)
-       is not distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note) then
+  if tg_op = 'UPDATE' and (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note,
+                           old.r2_final_practical, old.r2_final_theory, old.r2_special)
+       is not distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note,
+                             new.r2_final_practical, new.r2_final_theory, new.r2_special) then
     return null;
   end if;
   select * into s from public.subjects where id = coalesce(new.subject_id, old.subject_id);
   select full_name into v_student from public.students where id = coalesce(new.student_id, old.student_id);
   if tg_op <> 'INSERT' then
     v_old := jsonb_build_object('cw_theory', old.cw_theory, 'cw_practical', old.cw_practical,
-      'final_practical', old.final_practical, 'final_theory', old.final_theory, 'special', old.special, 'note', old.note);
+      'final_practical', old.final_practical, 'final_theory', old.final_theory, 'special', old.special, 'note', old.note,
+      'r2_final_practical', old.r2_final_practical, 'r2_final_theory', old.r2_final_theory, 'r2_special', old.r2_special);
   end if;
   if tg_op <> 'DELETE' then
     v_new := jsonb_build_object('cw_theory', new.cw_theory, 'cw_practical', new.cw_practical,
-      'final_practical', new.final_practical, 'final_theory', new.final_theory, 'special', new.special, 'note', new.note);
+      'final_practical', new.final_practical, 'final_theory', new.final_theory, 'special', new.special, 'note', new.note,
+      'r2_final_practical', new.r2_final_practical, 'r2_final_theory', new.r2_final_theory, 'r2_special', new.r2_special);
   end if;
   perform public.write_audit(
     case tg_op when 'INSERT' then 'grade.create' when 'UPDATE' then 'grade.update' else 'grade.delete' end,
@@ -376,13 +506,16 @@ begin
       new.status_note := null;
       new.submitted_at := null; new.submitted_by := null;
       new.reviewed_at := null;  new.reviewed_by := null;
+      new.r2_status := 'draft'; new.r2_note := null;
+      new.r2_submitted_at := null; new.r2_reviewed_at := null; new.r2_reviewed_by := null;
     end if;
     return new;
   end if;
 
   select exists (select 1 from public.grades g where g.subject_id = old.id
                  and (g.cw_theory is not null or g.cw_practical is not null or g.final_practical is not null
-                      or g.final_theory is not null or g.special is not null)) into v_has_grades;
+                      or g.final_theory is not null or g.special is not null
+                      or g.r2_final_practical is not null or g.r2_final_theory is not null)) into v_has_grades;
 
   if tg_op = 'DELETE' then
     if v_has_grades and not public.is_super() then
@@ -393,8 +526,10 @@ begin
 
   -- UPDATE
   if coalesce(current_setting('app.status_rpc', true), '') <> 'on' and
-     (new.status, new.status_note, new.submitted_at, new.submitted_by, new.reviewed_at, new.reviewed_by)
-       is distinct from (old.status, old.status_note, old.submitted_at, old.submitted_by, old.reviewed_at, old.reviewed_by) then
+     (new.status, new.status_note, new.submitted_at, new.submitted_by, new.reviewed_at, new.reviewed_by,
+      new.r2_status, new.r2_note, new.r2_submitted_at, new.r2_reviewed_at, new.r2_reviewed_by)
+       is distinct from (old.status, old.status_note, old.submitted_at, old.submitted_by, old.reviewed_at, old.reviewed_by,
+                         old.r2_status, old.r2_note, old.r2_submitted_at, old.r2_reviewed_at, old.r2_reviewed_by) then
     raise exception 'تغيير حالة القائمة يتم من خلال أزرار الإرسال والتدقيق فقط' using errcode = '42501';
   end if;
 
@@ -428,8 +563,10 @@ create trigger subjects_guard before insert or update or delete on public.subjec
 create or replace function public.subjects_audit() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-  if tg_op = 'UPDATE' and (to_jsonb(new) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by')
-                        = (to_jsonb(old) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by') then
+  if tg_op = 'UPDATE' and (to_jsonb(new) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by'
+                           - 'r2_status' - 'r2_note' - 'r2_submitted_at' - 'r2_reviewed_at' - 'r2_reviewed_by')
+                        = (to_jsonb(old) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by'
+                           - 'r2_status' - 'r2_note' - 'r2_submitted_at' - 'r2_reviewed_at' - 'r2_reviewed_by') then
     return null; -- تغيّر الحالة يُسجَّل في set_subject_status
   end if;
   perform public.write_audit(
@@ -546,18 +683,24 @@ begin
   if p_reason is not null and length(trim(p_reason)) > 0 then
     perform set_config('app.change_reason', trim(p_reason), true);
   end if;
-  insert into public.grades as g (subject_id, student_id, cw_theory, cw_practical, final_practical, final_theory, special, note)
+  insert into public.grades as g (subject_id, student_id, cw_theory, cw_practical, final_practical, final_theory, special, note,
+                                  r2_final_practical, r2_final_theory, r2_special)
   select p_subject_id, x.student_id, x.cw_theory, x.cw_practical, x.final_practical, x.final_theory,
-         nullif(x.special, ''), nullif(trim(x.note), '')
+         nullif(x.special, ''), nullif(trim(x.note), ''),
+         x.r2_final_practical, x.r2_final_theory, nullif(x.r2_special, '')
   from jsonb_to_recordset(p_rows) as x(student_id uuid, cw_theory numeric, cw_practical numeric,
-                                       final_practical numeric, final_theory numeric, special text, note text)
+                                       final_practical numeric, final_theory numeric, special text, note text,
+                                       r2_final_practical numeric, r2_final_theory numeric, r2_special text)
   on conflict (subject_id, student_id) do update set
     cw_theory = excluded.cw_theory,
     cw_practical = excluded.cw_practical,
     final_practical = excluded.final_practical,
     final_theory = excluded.final_theory,
     special = excluded.special,
-    note = excluded.note;
+    note = excluded.note,
+    r2_final_practical = excluded.r2_final_practical,
+    r2_final_theory = excluded.r2_final_theory,
+    r2_special = excluded.r2_special;
   return now();
 end $$;
 
@@ -608,40 +751,51 @@ begin
   where s.id = o.id;
 end $$;
 
--- 6.4 تغيير حالة القائمة: إرسال / إعادة / اعتماد / إعادة فتح
-create or replace function public.set_subject_status(p_subject_id uuid, p_status text, p_note text default null)
-returns void
+-- 6.4 تغيير حالة القائمة: إرسال / إعادة / اعتماد / إعادة فتح (للدور الأول أو الثاني)
+drop function if exists public.set_subject_status(uuid, text, text);
+create or replace function public.set_subject_status(
+  p_subject_id uuid, p_status text, p_note text default null, p_round smallint default 1
+) returns void
 language plpgsql security definer set search_path = '' as $$
 declare
   s public.subjects;
   v_role text := public.my_role();
   v_note text := nullif(trim(coalesce(p_note, '')), '');
   v_reason text;
+  v_cur text;
+  v_label text;
 begin
   select * into s from public.subjects where id = p_subject_id for update;
   if not found then raise exception 'المادة غير موجودة'; end if;
   if v_role is null then raise exception 'الحساب غير مفعل' using errcode = '42501'; end if;
+  if p_round not in (1, 2) then raise exception 'دور امتحاني غير معروف'; end if;
+  if p_round = 2 and s.status <> 'approved' then
+    raise exception 'يجب اعتماد نتائج الدور الأول قبل إجراءات الدور الثاني' using errcode = '22023';
+  end if;
+  v_cur := case when p_round = 1 then s.status else s.r2_status end;
+  v_label := case when p_round = 1 then '' else ' (الدور الثاني)' end;
 
   if p_status = 'submitted' then
-    if s.status not in ('draft','returned') then
+    if v_cur not in ('draft','returned') then
       raise exception 'لا يمكن إرسال القائمة في حالتها الحالية' using errcode = '22023';
     end if;
-    v_reason := public.grade_edit_block_reason(p_subject_id);
+    v_reason := case when p_round = 1 then public.grade_edit_block_reason(p_subject_id)
+                     else public.grade_r2_block_reason(p_subject_id) end;
     if v_reason is not null then raise exception '%', v_reason using errcode = '42501'; end if;
   elsif p_status in ('approved','returned') then
     if v_role not in ('admin','dean','assistant_dean','committee') then
       raise exception 'التدقيق والاعتماد من صلاحية اللجنة الامتحانية والإدارة' using errcode = '42501';
     end if;
-    if p_status = 'approved' and s.status not in ('submitted','returned','draft') then
+    if p_status = 'approved' and v_cur = 'approved' then
       raise exception 'القائمة معتمدة مسبقاً' using errcode = '22023';
     end if;
-    if p_status = 'approved' and s.status <> 'submitted' and v_role = 'committee' then
+    if p_status = 'approved' and v_cur <> 'submitted' and v_role = 'committee' then
       raise exception 'لا يمكن اعتماد قائمة لم تُرسل بعد' using errcode = '22023';
     end if;
-    if p_status = 'returned' and s.status = 'approved' and not public.is_super() then
+    if p_status = 'returned' and v_cur = 'approved' and not public.is_super() then
       raise exception 'إعادة فتح قائمة معتمدة من صلاحية الإدارة العليا فقط' using errcode = '42501';
     end if;
-    if p_status = 'returned' and s.status not in ('submitted','approved') then
+    if p_status = 'returned' and v_cur not in ('submitted','approved') then
       raise exception 'لا يمكن إعادة قائمة لم تُرسل' using errcode = '22023';
     end if;
     if p_status = 'returned' and v_note is null then
@@ -656,22 +810,32 @@ begin
   end if;
 
   perform set_config('app.status_rpc', 'on', true);
-  update public.subjects set
-    status = p_status,
-    status_note = case when p_status = 'submitted' then status_note else v_note end,
-    submitted_at = case when p_status = 'submitted' then now() else submitted_at end,
-    submitted_by = case when p_status = 'submitted' then auth.uid() else submitted_by end,
-    reviewed_at  = case when p_status in ('approved','returned') then now() else reviewed_at end,
-    reviewed_by  = case when p_status in ('approved','returned') then auth.uid() else reviewed_by end
-  where id = p_subject_id;
+  if p_round = 1 then
+    update public.subjects set
+      status = p_status,
+      status_note = case when p_status = 'submitted' then status_note else v_note end,
+      submitted_at = case when p_status = 'submitted' then now() else submitted_at end,
+      submitted_by = case when p_status = 'submitted' then auth.uid() else submitted_by end,
+      reviewed_at  = case when p_status in ('approved','returned') then now() else reviewed_at end,
+      reviewed_by  = case when p_status in ('approved','returned') then auth.uid() else reviewed_by end
+    where id = p_subject_id;
+  else
+    update public.subjects set
+      r2_status = p_status,
+      r2_note = case when p_status = 'submitted' then r2_note else v_note end,
+      r2_submitted_at = case when p_status = 'submitted' then now() else r2_submitted_at end,
+      r2_reviewed_at  = case when p_status in ('approved','returned') then now() else r2_reviewed_at end,
+      r2_reviewed_by  = case when p_status in ('approved','returned') then auth.uid() else r2_reviewed_by end
+    where id = p_subject_id;
+  end if;
   perform set_config('app.status_rpc', 'off', true);
 
   perform public.write_audit('subject.' || p_status, 'subject', s.id::text, s.department_id,
     s.name || case p_status when 'submitted' then ' — إرسال إلى اللجنة'
                             when 'approved' then ' — اعتماد'
                             when 'returned' then ' — إعادة للتعديل'
-                            else ' — إعادة إلى مسودة' end,
-    jsonb_build_object('from', s.status, 'to', p_status, 'note', v_note));
+                            else ' — إعادة إلى مسودة' end || v_label,
+    jsonb_build_object('from', v_cur, 'to', p_status, 'note', v_note, 'round', p_round));
 end $$;
 
 -- 6.5 فتح / غلق إدخال الدرجات (للكل أو لقسم محدد)
@@ -934,7 +1098,10 @@ select s.id as subject_id, s.year_id, s.department_id, s.stage, s.shift, s.term,
        coalesce(c.n_pass, 0)::int as n_pass,
        coalesce(c.n_fail, 0)::int as n_fail,
        coalesce(c.n_special, 0)::int as n_special,
-       c.avg_total
+       c.avg_total,
+       s.r2_status,
+       coalesce(c.n_r2_needed, 0)::int as n_r2_needed,
+       coalesce(c.n_r2_done, 0)::int as n_r2_done
 from public.subjects s
 left join lateral (
   select count(*) as n_students,
@@ -942,7 +1109,12 @@ left join lateral (
          count(*) filter (where public.grade_total(s, g) >= (select pass_mark from public.settings where id = 1)) as n_pass,
          count(*) filter (where public.grade_total(s, g) < (select pass_mark from public.settings where id = 1)) as n_fail,
          count(*) filter (where g.special is not null) as n_special,
-         round(avg(public.grade_total(s, g)), 2) as avg_total
+         round(avg(public.grade_total(s, g)), 2) as avg_total,
+         count(*) filter (where g.special is not null
+                           or public.grade_total(s, g) < (select pass_mark from public.settings where id = 1)) as n_r2_needed,
+         count(*) filter (where (g.special is not null
+                                 or public.grade_total(s, g) < (select pass_mark from public.settings where id = 1))
+                            and (g.r2_special is not null or public.grade_r2_total(s, g) is not null)) as n_r2_done
   from public.students st
   left join public.grades g on g.subject_id = s.id and g.student_id = st.id
   where st.year_id = s.year_id and st.department_id = s.department_id
@@ -961,6 +1133,7 @@ alter table public.students       enable row level security;
 alter table public.subjects       enable row level security;
 alter table public.grades         enable row level security;
 alter table public.audit_log      enable row level security;
+alter table public.curriculum     enable row level security;
 
 drop policy if exists departments_read on public.departments;
 create policy departments_read on public.departments for select to authenticated using (true);
@@ -1028,6 +1201,12 @@ drop policy if exists grades_delete on public.grades;
 create policy grades_delete on public.grades for delete to authenticated
   using (public.can_write_subject(subject_id));
 
+drop policy if exists curriculum_read on public.curriculum;
+create policy curriculum_read on public.curriculum for select to authenticated using (true);
+drop policy if exists curriculum_write on public.curriculum;
+create policy curriculum_write on public.curriculum for all to authenticated
+  using (public.can_manage_department(department_id)) with check (public.can_manage_department(department_id));
+
 drop policy if exists audit_read on public.audit_log;
 create policy audit_read on public.audit_log for select to authenticated using (
   public.can_view_all() or (public.my_role() = 'head' and department_id = public.my_department())
@@ -1040,7 +1219,7 @@ create policy audit_read on public.audit_log for select to authenticated using (
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.departments, public.academic_years, public.students,
-  public.subjects, public.grades to authenticated;
+  public.subjects, public.grades, public.curriculum to authenticated;
 grant select, update on public.settings to authenticated;
 grant select on public.profiles, public.audit_log, public.subject_progress to authenticated;
 revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
@@ -1052,13 +1231,14 @@ revoke execute on function public.write_audit(text, text, text, uuid, text, json
 grant execute on function
   public.my_role(), public.my_department(), public.is_super(), public.can_view_all(),
   public.can_manage_department(uuid), public.is_class_teacher(uuid, uuid, smallint, text),
-  public.can_write_subject(uuid), public.grade_edit_block_reason(uuid),
+  public.can_write_subject(uuid), public.grade_edit_block_reason(uuid), public.grade_r2_block_reason(uuid),
   public.apply_rounding(numeric), public.grade_total(public.subjects, public.grades),
+  public.grade_r2_total(public.subjects, public.grades),
   public.log_client_event(text, text, jsonb),
   public.save_grades(uuid, jsonb, text),
   public.add_students(uuid, uuid, smallint, text, text[]),
   public.reorder_students(uuid[]),
-  public.set_subject_status(uuid, text, text),
+  public.set_subject_status(uuid, text, text, smallint),
   public.set_entry_open(boolean, uuid),
   public.copy_subjects(uuid, uuid, smallint, text, smallint, uuid, uuid, smallint, text, smallint, boolean),
   public.can_manage_role(text, uuid), public.can_manage_user(uuid),
@@ -1083,6 +1263,46 @@ on conflict (name) do nothing;
 
 insert into public.academic_years (label) values ('2025-2026'), ('2026-2027')
 on conflict (label) do nothing;
+
+-- الخطة الدراسية لقسم تقنيات صحة المجتمع (المرحلتان الأولى والثانية — المفردات الدراسية 2025-2026)
+insert into public.curriculum (department_id, stage, term, sort, name, name_en, category, language, theory_hours, practical_hours, units)
+select d.id, v.stage, v.term, v.sort, v.name, v.name_en, v.category, v.language, v.th, v.pr, v.units
+from public.departments d
+cross join (values
+  (1, 1, 1, 'تقنيات الأجهزة الطبية',           'Techniques for Medical Device',      'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 2, 'علم الاحياء المجهرية الطبية 1',   'Medical Microbiology 1',             'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 1, 3, 'مبادئ صحة المجتمع 1',             'Principles of Community Health 1',   'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 4, 'الكيمياء السريرية 1',             'Clinical Chemistry 1',               'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 5, 'التشريح العام 1',                 'General Anatomy 1',                  'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 1, 6, 'علم وظائف الاعضاء 1',             'Physiology 1',                       'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 7, 'مصطلحات طبية',                    'Medical Terminology (1)',            'عامة',            'English', 1, 0, 1),
+  (1, 1, 8, 'حقوق الانسان والديمقراطية',       'Human Rights and Democracy',         'عامة',            'العربية', 2, 0, 2),
+  (1, 1, 9, 'اللغة العربية',                   'Arabic Language (1)',                'عامة',            'العربية', 1, 0, 1),
+  (1, 2, 1, 'علم الاحياء المجهرية الطبية 2',   'Medical Microbiology 2',             'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 2, 2, 'مبادئ صحة المجتمع 2',             'Principles of Community Health 2',   'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 3, 'الكيمياء السريرية 2',             'Clinical Chemistry 2',               'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 4, 'التشريح العام 2',                 'General Anatomy 2',                  'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 2, 5, 'علم وظائف الاعضاء 2',             'Physiology 2',                       'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 6, 'اللغة العربية',                   'Arabic Language',                    'عامة',            'العربية', 1, 0, 1),
+  (1, 2, 7, 'مبادئ الحاسوب',                   'Computer Fundamentals',              'عامة',            'العربية', 1, 2, 2),
+  (2, 1, 1, 'علم التغذية 1',                   'Nutrition 1',                        'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 2, 'امراض انتقالية 1',                'Communicable Diseases 1',            'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 3, 'علم الدوائيات 1',                 'Pharmacology 1',                     'تخصصية / مساعدة', 'English', 2, 2, 3),
+  (2, 1, 4, 'علم الوبائيات 1',                 'Epidemiology 1',                     'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 5, 'صحة بيئة 1',                      'Environmental Health 1',             'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 6, 'تطبيقات الحاسوب',                 'Computer Applications',              'عامة',            'العربية', 1, 2, 2),
+  (2, 1, 7, 'جرائم نظام البعث في العراق',      'Crimes of the Baath Regime in Iraq', 'عامة',            'العربية', 2, 0, 2),
+  (2, 1, 8, 'اللغة العربية 1',                 'Arabic Language (1)',                'عامة',            'العربية', 1, 0, 1),
+  (2, 2, 1, 'علم التغذية 2',                   'Nutrition 2',                        'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 2, 'امراض انتقالية 2',                'Communicable Diseases 2',            'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 3, 'علم الدوائيات 2',                 'Pharmacology 2',                     'تخصصية / مساعدة', 'English', 2, 2, 3),
+  (2, 2, 4, 'علم الوبائيات 2',                 'Epidemiology 2',                     'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 5, 'إحصاء طبي حياتي',                 'Biostatistics',                      'تخصصية / اساسية', 'English', 2, 2, 3),
+  (2, 2, 6, 'صحة بيئة 2',                      'Environmental Health 2',             'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 7, 'اللغة العربية',                   'Arabic Language',                    'عامة',            'العربية', 1, 0, 1)
+) as v(stage, term, sort, name, name_en, category, language, th, pr, units)
+where d.code = 'CHT'
+on conflict (department_id, stage, term, name) do nothing;
 
 insert into public.settings (id, current_year_id)
 values (1, (select id from public.academic_years where label = '2026-2027'))

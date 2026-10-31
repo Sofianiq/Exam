@@ -5,10 +5,13 @@ import type {
   AuditEntry,
   AuditFilter,
   ClassKey,
+  CurriculumInput,
+  CurriculumItem,
   Department,
   Grade,
   GradeRowInput,
   Profile,
+  Round,
   Settings,
   Student,
   StudentStatus,
@@ -63,6 +66,8 @@ export interface Backend {
   deleteAccount(userId: string): Promise<void>
 
   listStudents(k: ClassKey): Promise<Student[]>
+  getStudent(id: string): Promise<Student | null>
+  searchStudents(yearId: string, query: string): Promise<Student[]>
   addStudents(k: ClassKey, names: string[]): Promise<{ added: number; skipped: string[] }>
   updateStudent(id: string, patch: StudentPatch): Promise<void>
   deleteStudent(id: string): Promise<void>
@@ -73,7 +78,11 @@ export interface Backend {
   saveSubject(s: SubjectInput): Promise<Subject>
   deleteSubject(id: string): Promise<void>
   copySubjects(from: ClassKey & { term: Term }, to: ClassKey & { term: Term }, withTeachers: boolean): Promise<number>
-  setSubjectStatus(id: string, status: SubjectStatus, note?: string | null): Promise<void>
+  setSubjectStatus(id: string, status: SubjectStatus, note?: string | null, round?: Round): Promise<void>
+
+  listCurriculum(departmentId: string): Promise<CurriculumItem[]>
+  saveCurriculum(c: CurriculumInput): Promise<void>
+  deleteCurriculum(id: string): Promise<void>
 
   getGrades(subjectIds: string[]): Promise<Grade[]>
   saveGrades(subjectId: string, rows: GradeRowInput[], reason?: string | null): Promise<string>

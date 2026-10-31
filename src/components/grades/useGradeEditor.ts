@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { backend } from '../../data'
-import { componentsOf, computeRow, type RowResult } from '../../lib/calc'
+import { componentsOf, computeRow, R2_OF, type RowResult } from '../../lib/calc'
 import { parseGradeInput } from '../../lib/parse'
-import type { Grade, GradeComponent, GradeRowInput, GradeValues, Settings, SpecialCode, Student, Subject } from '../../lib/types'
+import type { Grade, GradeComponent, GradeRowInput, GradeValues, R2Component, Settings, SpecialCode, Student, Subject } from '../../lib/types'
 
 export interface DraftRow {
   cw_theory: string
@@ -11,15 +11,28 @@ export interface DraftRow {
   final_theory: string
   special: SpecialCode | ''
   note: string
+  r2_final_practical: string
+  r2_final_theory: string
+  r2_special: SpecialCode | ''
 }
 
 export interface ParsedRow {
   values: GradeValues
-  errors: Partial<Record<GradeComponent, string>>
+  errors: Partial<Record<GradeComponent | R2Component, string>>
   result: RowResult
 }
 
-const EMPTY: DraftRow = { cw_theory: '', cw_practical: '', final_practical: '', final_theory: '', special: '', note: '' }
+const EMPTY: DraftRow = {
+  cw_theory: '',
+  cw_practical: '',
+  final_practical: '',
+  final_theory: '',
+  special: '',
+  note: '',
+  r2_final_practical: '',
+  r2_final_theory: '',
+  r2_special: '',
+}
 const str = (n: number | null | undefined) => (n == null ? '' : String(n))
 
 export const toDraft = (g?: Grade): DraftRow =>
@@ -31,6 +44,9 @@ export const toDraft = (g?: Grade): DraftRow =>
         final_theory: str(g.final_theory),
         special: g.special ?? '',
         note: g.note ?? '',
+        r2_final_practical: str(g.r2_final_practical),
+        r2_final_theory: str(g.r2_final_theory),
+        r2_special: g.r2_special ?? '',
       }
     : { ...EMPTY }
 
@@ -42,6 +58,9 @@ export function parseDraft(subject: Subject, d: DraftRow, settings: Settings): P
     final_theory: null,
     special: d.special || null,
     note: d.note.trim() || null,
+    r2_final_practical: null,
+    r2_final_theory: null,
+    r2_special: d.r2_special || null,
   }
   const errors: ParsedRow['errors'] = {}
   for (const c of componentsOf(subject)) {
@@ -49,6 +68,14 @@ export function parseDraft(subject: Subject, d: DraftRow, settings: Settings): P
     if (r.kind === 'number') values[c.key] = r.value
     else if (r.kind === 'special') values.special = values.special ?? r.code
     else if (r.kind === 'error') errors[c.key] = r.message
+    // الدور الثاني لمكونات الامتحان النهائي فقط
+    const k2 = R2_OF[c.key]
+    if (k2) {
+      const r2 = parseGradeInput(d[k2] ?? '', c.max)
+      if (r2.kind === 'number') values[k2] = r2.value
+      else if (r2.kind === 'special') values.r2_special = values.r2_special ?? r2.code
+      else if (r2.kind === 'error') errors[k2] = r2.message
+    }
   }
   return { values, errors, result: computeRow(subject, values, settings) }
 }

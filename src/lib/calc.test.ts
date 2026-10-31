@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bandCounts, componentsOf, computeRow, masterRow, rankDescending, sheetStats } from './calc'
+import { bandCounts, componentsOf, computeRow, rankDescending, sheetStats, summarizeStudent, type RowResult } from './calc'
 import type { Settings } from './types'
 
 const settings: Settings = {
@@ -19,6 +19,8 @@ const settings: Settings = {
   average_mode: 'simple',
   idle_minutes: 60,
   current_year_id: null,
+  second_round_cap: null,
+  max_failed_subjects: 2,
 }
 
 // نفس توزيع سجل الدرجات الأصلي: السعي 40 (25 نظري + 15 عملي) + العملي النهائي 25 + النظري النهائي 35
@@ -105,37 +107,90 @@ describe('statistics', () => {
   it('ranks with ties like Excel RANK', () => {
     expect(rankDescending([80, 90, 80, null, 70])).toEqual([2, 1, 2, null, 4])
   })
-  it('builds master rows with status text', () => {
-    const m = masterRow(
-      [
-        { total: 70, special: null, complete: true },
-        { total: 40, special: null, complete: true },
-        { total: null, special: 'absent', complete: true },
-      ],
-      [3, 3, 2],
-      settings,
-    )
-    expect(m.average).toBe(55)
-    expect(m.passed).toBe(1)
-    expect(m.failed).toBe(1)
-    expect(m.status).toBe('راسب في 1 مادة، حالة خاصة (1)')
-    expect(masterRow([{ total: 70, special: null, complete: true }], [2], settings).status).toBe('ناجح في جميع المواد')
-  })
-  it('supports unit-weighted averages', () => {
-    const m = masterRow(
-      [
-        { total: 90, special: null, complete: true },
-        { total: 60, special: null, complete: true },
-      ],
-      [3, 1],
-      { ...settings, average_mode: 'weighted' },
-    )
-    expect(m.average).toBe(82.5)
-  })
   it('counts grade bands', () => {
     const b = bandCounts([95, 85, 72, 50, 49, null], settings.grade_scale)
     expect(b.map((x) => x.count)).toEqual([1, 1, 1, 0, 1, 1])
     expect(b[0].upper).toBe(100)
     expect(b[1].upper).toBe(89)
+  })
+})
+
+describe('second round (coursework fixed)', () => {
+  const failed = { ...g(10, 5, 10, 15), r2_final_practical: 18, r2_final_theory: 25, r2_special: null }
+  it('replaces only the final exam and keeps the coursework', () => {
+    const r = computeRow(practical, failed, settings)
+    expect(r.total).toBe(40)
+    expect(r.needsR2).toBe(true)
+    expect(r.r2Total).toBe(15 + 18 + 25)
+    expect(r.finalTotal).toBe(58)
+    expect(r.finalRound).toBe(2)
+    expect(r.finalPassed).toBe(true)
+    expect(r.finalLabel).toBe('مقبول')
+  })
+  it('ignores round-2 values for students who passed round 1', () => {
+    const r = computeRow(practical, { ...g(20, 12, 20, 30), r2_final_theory: 10, r2_final_practical: 10 }, settings)
+    expect(r.needsR2).toBe(false)
+    expect(r.finalTotal).toBe(82)
+    expect(r.finalRound).toBe(1)
+  })
+  it('lets absent students sit round 2 and applies the optional cap', () => {
+    const absent = { ...g(20, null, null, null), special: 'absent' as const, r2_final_theory: 60 }
+    expect(computeRow(theory, absent, settings).finalTotal).toBe(80)
+    expect(computeRow(theory, absent, { ...settings, second_round_cap: 50 }).finalTotal).toBe(50)
+    const postponed = { ...absent, special: 'postponed' as const }
+    expect(computeRow(theory, postponed, { ...settings, second_round_cap: 50 }).finalTotal).toBe(80)
+  })
+})
+
+describe('student result', () => {
+  const R = (finalTotal: number | null, opts: Partial<RowResult> = {}): RowResult =>
+    ({
+      complete: true,
+      needsR2: finalTotal != null && finalTotal < 50,
+      r2Complete: false,
+      finalTotal,
+      finalPassed: finalTotal == null ? null : finalTotal >= 50,
+      ...opts,
+    }) as RowResult
+  const subs = [
+    { name: 'المادة أ', units: 3 },
+    { name: 'المادة ب', units: 2 },
+    { name: 'المادة ج', units: 4 },
+  ]
+  it('computes the weighted average exactly as in the example (82.22)', () => {
+    const s = summarizeStudent(subs, [R(80), R(70), R(90)], { ...settings, average_mode: 'weighted' })
+    expect(s.sum).toBe(240)
+    expect(s.average).toBe(82.22)
+    expect(s.averageLabel).toBe('جيد جداً')
+    expect(s.status).toBe('pass')
+    expect(s.statusText).toBe('ناجح')
+  })
+  it('supports a simple average when configured', () => {
+    expect(summarizeStudent(subs, [R(80), R(70), R(90)], { ...settings, average_mode: 'simple' }).average).toBe(80)
+  })
+  it('marks مكمل with the subject names when failing up to two subjects', () => {
+    const s = summarizeStudent(subs, [R(80), R(40), R(45)], settings)
+    expect(s.status).toBe('carry')
+    expect(s.statusText).toBe('مكمل في: المادة ب، المادة ج')
+  })
+  it('marks راسب when failing more than two subjects', () => {
+    const four = [...subs, { name: 'المادة د', units: 1 }]
+    const s = summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings)
+    expect(s.status).toBe('fail')
+    expect(s.statusText).toBe('راسب')
+  })
+  it('passes after round 2 when the carried subjects are passed', () => {
+    const viaR2 = R(60, { needsR2: true, r2Complete: true, finalRound: 2 })
+    const s = summarizeStudent(subs, [R(80), viaR2, R(90)], settings)
+    expect(s.status).toBe('pass_r2')
+    expect(s.statusText).toBe('ناجح (الدور الثاني)')
+  })
+  it('fails after round 2 when a carried subject is still failed', () => {
+    const stillFail = R(40, { needsR2: true, r2Complete: true, finalPassed: false })
+    expect(summarizeStudent(subs, [R(80), stillFail, R(90)], settings).status).toBe('fail')
+  })
+  it('reports incomplete results', () => {
+    const s = summarizeStudent(subs, [R(80), R(null, { complete: false, needsR2: false }), R(90)], settings)
+    expect(s.status).toBe('incomplete')
   })
 })

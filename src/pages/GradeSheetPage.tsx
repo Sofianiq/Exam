@@ -17,20 +17,22 @@ import {
   Undo2,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useBlocker, useParams } from 'react-router-dom'
+import { Link, useBlocker, useParams, useSearchParams } from 'react-router-dom'
 import { classKeyOf, useGrades, useInvalidate, useStudents } from '../app/queries'
 import { useSession } from '../app/session'
 import { useConfirm, useToast } from '../components/feedback'
 import { GradeGrid } from '../components/grades/GradeGrid'
+import { Round2Grid } from '../components/grades/Round2Grid'
 import { SubjectPrint } from '../components/grades/SubjectPrint'
 import { useGradeEditor } from '../components/grades/useGradeEditor'
-import { Badge, Button, Callout, Card, Checkbox, LoadingBlock, PageHeader, StatusBadge, cx } from '../components/ui'
+import { Badge, Button, Callout, Card, Checkbox, LoadingBlock, PageHeader, Segmented, StatusBadge, cx } from '../components/ui'
 import { backend } from '../data'
 import { bandCounts, sheetStats } from '../lib/calc'
 import { displayName, fmtDateTime, fmtNum, fmtPct, fmtTime, yearLabel } from '../lib/format'
 import { SHIFT_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { normalizeArabic } from '../lib/parse'
-import { canViewAll, gradeEditBlock, workflowActions } from '../lib/perm'
+import { canViewAll, gradeEditBlock, gradeEditBlockR2, workflowActions } from '../lib/perm'
+import type { Round, SubjectStatus } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function GradeSheetPage() {
@@ -49,14 +51,24 @@ export function GradeSheetPage() {
   const [onlyMissing, setOnlyMissing] = useState(false)
   const [highlight, setHighlight] = useState(false)
   const [acting, setActing] = useState(false)
+  const [sp, setSp] = useSearchParams()
+  const round: Round = sp.get('round') === '2' ? 2 : 1
+  const setRound = (r: Round) => {
+    const next = new URLSearchParams(sp)
+    if (r === 2) next.set('round', '2')
+    else next.delete('round')
+    setSp(next, { replace: true })
+  }
 
   const onSaved = useCallback(() => void invalidate('progress', 'audit'), [invalidate])
   const editor = useGradeEditor({ subject, students: studentsQ.data, grades: gradesQ.data, settings: s.settings, reason, onSaved })
 
-  const block = subject ? gradeEditBlock(s.profile, subject, s.settings, dept) : 'loading'
-  const approvedEdit = subject?.status === 'approved' && block == null
+  const block = !subject ? 'loading' : round === 1 ? gradeEditBlock(s.profile, subject, s.settings, dept) : gradeEditBlockR2(s.profile, subject, s.settings, dept)
+  const roundStatus = round === 1 ? subject?.status : subject?.r2_status
+  const roundNote = round === 1 ? subject?.status_note : subject?.r2_note
+  const approvedEdit = roundStatus === 'approved' && block == null
   const readOnly = block != null || (approvedEdit && !reason)
-  const actions = subject ? workflowActions(s.profile, subject, s.settings, dept) : null
+  const actions = subject ? workflowActions(s.profile, subject, s.settings, dept, round) : null
 
   const students = useMemo(() => studentsQ.data ?? [], [studentsQ.data])
   const numberOf = useMemo(() => new Map(students.map((st, i) => [st.id, i + 1])), [students])
@@ -77,6 +89,18 @@ export function GradeSheetPage() {
   const stats = sheetStats(results, s.settings.pass_mark)
   const bands = bandCounts(results.map((r) => r.total), s.settings.grade_scale)
   const incomplete = active.length - stats.complete
+  // الدور الثاني: الطلبة غير الناجحين في الدور الأول فقط
+  const r2Students = useMemo(
+    () => students.filter((st) => st.status === 'active' && editor.parsed[st.id]?.result.complete && editor.parsed[st.id]?.result.needsR2),
+    [students, editor.parsed],
+  )
+  const r2Shown = useMemo(() => {
+    const t = normalizeArabic(search)
+    return r2Students.filter((st) => !t || normalizeArabic(st.full_name).includes(t))
+  }, [r2Students, search])
+  const r2Results = r2Students.map((st) => editor.parsed[st.id].result)
+  const r2Missing = r2Results.filter((r) => !r.r2Complete).length
+  const r2Passed = r2Results.filter((r) => r.r2Complete && r.finalPassed).length
   const teachers = subject?.teacher_ids.map((id) => displayName(s.profileById(id))).filter(Boolean).join(' + ') ?? ''
 
   // حماية التعديلات غير المحفوظة
@@ -144,22 +168,23 @@ export function GradeSheetPage() {
   const doSubmit = async () => {
     if (!(await editor.flush())) return toast.error('صحح الخلايا المظللة باللون الأحمر قبل الإرسال')
     setHighlight(true)
+    const missingNow = round === 1 ? incomplete : r2Missing
     const ok = await confirm({
-      title: 'إرسال القائمة إلى اللجنة الامتحانية',
+      title: round === 1 ? 'إرسال القائمة إلى اللجنة الامتحانية' : 'إرسال نتائج الدور الثاني إلى اللجنة',
       message: (
         <div className="space-y-2">
-          {incomplete > 0 && (
+          {missingNow > 0 && (
             <div className="rounded-lg bg-warning-soft px-3 py-2 text-warning">
-              <b>تنبيه:</b> يوجد {incomplete} طالب بدرجات ناقصة (مظللة باللون البرتقالي). يمكنك تسجيل حالة خاصة لهم (غائب/محروم/مؤجل).
+              <b>تنبيه:</b> يوجد {missingNow} طالب بدرجات ناقصة. يمكنك تسجيل حالة خاصة لهم (غائب/محروم/مؤجل).
             </div>
           )}
           <p>بعد الإرسال لن تتمكن من تعديل الدرجات إلا إذا أعادت اللجنة القائمة إليك.</p>
         </div>
       ),
-      confirmText: incomplete > 0 ? 'إرسال رغم النقص' : 'إرسال',
+      confirmText: missingNow > 0 ? 'إرسال رغم النقص' : 'إرسال',
     })
     if (!ok) return
-    await act(() => backend.setSubjectStatus(subject.id, 'submitted'), 'تم إرسال القائمة إلى اللجنة الامتحانية')
+    await act(() => backend.setSubjectStatus(subject.id, 'submitted', null, round), 'تم إرسال القائمة إلى اللجنة الامتحانية')
   }
 
   const act = async (fn: () => Promise<void>, msg: string) => {
@@ -176,28 +201,29 @@ export function GradeSheetPage() {
   }
 
   const doApprove = async () => {
-    if (incomplete > 0) setHighlight(true)
+    const missingNow = round === 1 ? incomplete : r2Missing
+    if (missingNow > 0) setHighlight(true)
     const ok = await confirm({
-      title: 'اعتماد القائمة',
+      title: round === 1 ? 'اعتماد القائمة' : 'اعتماد نتائج الدور الثاني',
       message:
-        incomplete > 0 ? (
-          <span className="text-warning">تنبيه: يوجد {incomplete} طالب بدرجات ناقصة. هل تريد الاعتماد رغم ذلك؟</span>
+        missingNow > 0 ? (
+          <span className="text-warning">تنبيه: يوجد {missingNow} طالب بدرجات ناقصة. هل تريد الاعتماد رغم ذلك؟</span>
         ) : (
           'بعد الاعتماد تُغلق القائمة ولا يمكن تعديلها إلا من الإدارة العليا مع ذكر السبب.'
         ),
       confirmText: 'اعتماد',
     })
-    if (ok) await act(() => backend.setSubjectStatus(subject.id, 'approved'), 'تم اعتماد القائمة')
+    if (ok) await act(() => backend.setSubjectStatus(subject.id, 'approved', null, round), 'تم اعتماد القائمة')
   }
 
   const doReturn = async () => {
     const note = await confirm({
-      title: subject.status === 'approved' ? 'إعادة فتح قائمة معتمدة' : 'إعادة القائمة للتعديل',
+      title: roundStatus === 'approved' ? 'إعادة فتح قائمة معتمدة' : 'إعادة القائمة للتعديل',
       message: 'ستُعاد القائمة إلى التدريسي ليتمكن من التعديل ثم إعادة الإرسال.',
       input: { label: 'ملاحظة اللجنة (تظهر للتدريسي)', required: true, multiline: true, placeholder: 'مثال: يرجى مراجعة درجات العملي للطلبة…' },
       confirmText: 'إعادة القائمة',
     })
-    if (typeof note === 'string') await act(() => backend.setSubjectStatus(subject.id, 'returned', note), 'تمت إعادة القائمة إلى التدريسي')
+    if (typeof note === 'string') await act(() => backend.setSubjectStatus(subject.id, 'returned', note, round), 'تمت إعادة القائمة إلى التدريسي')
   }
 
   const doDraft = async () => {
@@ -206,7 +232,7 @@ export function GradeSheetPage() {
       input: { label: 'سبب الإجراء', required: true },
       confirmText: 'تأكيد',
     })
-    if (typeof note === 'string') await act(() => backend.setSubjectStatus(subject.id, 'draft', note), 'أُعيدت القائمة إلى مسودة')
+    if (typeof note === 'string') await act(() => backend.setSubjectStatus(subject.id, 'draft', note, round), 'أُعيدت القائمة إلى مسودة')
   }
 
   const startApprovedEdit = async () => {
@@ -276,6 +302,11 @@ export function GradeSheetPage() {
           actions={
             <>
               <StatusBadge status={subject.status} />
+              {subject.status === 'approved' && r2Students.length > 0 && (
+                <Badge tone="gold">
+                  الدور الثاني: {r2Students.length} طالب — <StatusInline status={subject.r2_status} />
+                </Badge>
+              )}
               <Button size="sm" icon={<Printer className="size-4" />} onClick={() => {
                 void backend.logEvent('report.print', `طباعة — ${subject.name}`)
                 window.print()
@@ -288,6 +319,20 @@ export function GradeSheetPage() {
             </>
           }
         />
+
+        {(subject.status === 'approved' || round === 2) && (
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <Segmented<Round>
+              value={round}
+              onChange={setRound}
+              options={[
+                { value: 1, label: 'الدور الأول' },
+                { value: 2, label: `الدور الثاني (${r2Students.length})` },
+              ]}
+            />
+            {round === 2 && <span className="text-xs text-muted">السعي الفصلي ثابت، ويُعاد إدخال درجة الامتحان النهائي فقط للطلبة غير الناجحين في الدور الأول.</span>}
+          </div>
+        )}
 
         {/* شريط الحالة والإجراءات */}
         <Card className="mb-4 flex flex-wrap items-center gap-3 px-4 py-3">
@@ -310,10 +355,10 @@ export function GradeSheetPage() {
             )}
             {actions?.giveBack && (
               <Button variant="secondary" size="sm" icon={<Undo2 className="size-4" />} loading={acting} onClick={() => void doReturn()}>
-                {subject.status === 'approved' ? 'إعادة فتح' : 'إعادة للتعديل'}
+                {roundStatus === 'approved' ? 'إعادة فتح' : 'إعادة للتعديل'}
               </Button>
             )}
-            {actions?.toDraft && subject.status !== 'approved' && (
+            {actions?.toDraft && roundStatus !== 'approved' && (
               <Button variant="ghost" size="sm" icon={<RotateCcw className="size-4" />} loading={acting} onClick={() => void doDraft()}>
                 إلى مسودة
               </Button>
@@ -321,14 +366,14 @@ export function GradeSheetPage() {
           </div>
         </Card>
 
-        {subject.status === 'returned' && subject.status_note && (
+        {roundStatus === 'returned' && roundNote && (
           <Callout tone="warning" icon={<Undo2 className="size-4.5" />} title="القائمة معادة من اللجنة الامتحانية" className="mb-4">
-            {subject.status_note}
-            {subject.reviewed_at && <span className="ms-2 text-xs opacity-75">({fmtDateTime(subject.reviewed_at)})</span>}
+            {roundNote}
+            {round === 1 && subject.reviewed_at && <span className="ms-2 text-xs opacity-75">({fmtDateTime(subject.reviewed_at)})</span>}
           </Callout>
         )}
         {block && block !== 'loading' && block !== 'ليست لديك صلاحية على درجات هذه المادة' && (
-          <Callout tone={subject.status === 'approved' ? 'success' : 'info'} icon={<Lock className="size-4.5" />} className="mb-4" title="القائمة للعرض فقط">
+          <Callout tone={roundStatus === 'approved' ? 'success' : 'info'} icon={<Lock className="size-4.5" />} className="mb-4" title="القائمة للعرض فقط">
             {block}
           </Callout>
         )}
@@ -353,8 +398,8 @@ export function GradeSheetPage() {
             <Search className="pointer-events-none absolute inset-y-0 start-3 my-auto size-4 text-faint" />
             <input className="field ps-9" placeholder="بحث باسم الطالب…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-          <Checkbox checked={onlyMissing} onChange={setOnlyMissing} label={`عرض الناقص فقط (${incomplete})`} />
-          <Checkbox checked={highlight} onChange={setHighlight} label="تظليل الخلايا الناقصة" />
+          {round === 1 && <Checkbox checked={onlyMissing} onChange={setOnlyMissing} label={`عرض الناقص فقط (${incomplete})`} />}
+          {round === 1 && <Checkbox checked={highlight} onChange={setHighlight} label="تظليل الخلايا الناقصة" />}
           {!readOnly && (
             <span className="flex items-center gap-1.5 text-xs text-muted">
               <Info className="size-3.5" /> الصق عموداً من Excel مباشرة • «غ» غائب، «ح» محروم، «م» مؤجل • الأسهم وEnter للتنقل • Ctrl+S للحفظ
@@ -366,6 +411,26 @@ export function GradeSheetPage() {
           <Callout tone="warning" icon={<AlertTriangle className="size-4.5" />} title="لا يوجد طلبة في هذا الصف">
             يجب على مقرر القسم إضافة أسماء الطلبة أولاً من صفحة «قائمة الطلبة».
           </Callout>
+        ) : round === 2 ? (
+          r2Students.length === 0 ? (
+            <Callout tone="success" icon={<CheckCircle2 className="size-4.5" />} title="لا يوجد طلبة للدور الثاني">
+              جميع الطلبة ناجحون في الدور الأول لهذه المادة.
+            </Callout>
+          ) : (
+            <div className="card max-h-[calc(100dvh-14rem)] min-h-60 overflow-auto scrollbar-thin">
+              <Round2Grid
+                subject={subject}
+                students={r2Shown}
+                numberOf={numberOf}
+                drafts={editor.drafts}
+                parsed={editor.parsed}
+                readOnly={readOnly}
+                passMark={s.settings.pass_mark}
+                onChange={editor.update}
+                onPasteRows={(n) => toast.info(`تم لصق درجات ${n} طالب`)}
+              />
+            </div>
+          )
         ) : (
           <div className="card max-h-[calc(100dvh-14rem)] min-h-80 overflow-auto scrollbar-thin">
             <GradeGrid
@@ -384,7 +449,15 @@ export function GradeSheetPage() {
         )}
 
         {/* الإحصائيات */}
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
+        {round === 2 && (
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MiniStat label="طلبة الدور الثاني" value={r2Students.length} />
+            <MiniStat label="أُدخلت درجاتهم" value={`${r2Students.length - r2Missing}/${r2Students.length}`} />
+            <MiniStat label="ناجحون في الدور الثاني" value={r2Passed} tone="text-success" />
+            <MiniStat label="غير ناجحين" value={r2Results.filter((r) => r.r2Complete && !r.finalPassed).length} tone="text-danger" />
+          </div>
+        )}
+        <div className={cx('mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8', round === 2 && 'hidden')}>
           <MiniStat label="عدد الطلبة" value={stats.count} />
           <MiniStat label="مكتمل" value={`${stats.complete}/${stats.count}`} />
           <MiniStat label="الناجحون" value={stats.pass} tone="text-success" />
@@ -394,7 +467,7 @@ export function GradeSheetPage() {
           <MiniStat label="المعدل" value={stats.avg == null ? '—' : fmtNum(stats.avg)} />
           <MiniStat label="نسبة النجاح" value={fmtPct(stats.passRate)} />
         </div>
-        {stats.graded > 0 && (
+        {round === 1 && stats.graded > 0 && (
           <Card className="mt-3 flex flex-wrap items-center gap-2 px-4 py-3 text-xs">
             <span className="font-semibold text-muted">توزيع التقديرات:</span>
             {bands.map((b) => (
@@ -458,4 +531,8 @@ function SaveIndicator({ editor, readOnly }: { editor: ReturnType<typeof useGrad
   ) : (
     <span className="text-xs text-muted">الحفظ تلقائي أثناء الإدخال</span>
   )
+}
+
+function StatusInline({ status }: { status: SubjectStatus }) {
+  return <b>{{ draft: 'قيد الإدخال', submitted: 'بانتظار التدقيق', returned: 'معادة', approved: 'معتمدة' }[status]}</b>
 }

@@ -1,8 +1,8 @@
-import { ArrowLeft, Building2, ChevronLeft, GraduationCap, Lock, Moon, Sun } from 'lucide-react'
+import { ArrowLeft, BookMarked, Building2, ChevronLeft, GraduationCap, Lock, Moon, Sun } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { completionOf, studentCount, useProgress } from '../app/queries'
 import { useSession } from '../app/session'
-import { Badge, LoadingBlock, PageHeader, ProgressBar, cx } from '../components/ui'
+import { Badge, Button, LoadingBlock, PageHeader, ProgressBar, cx } from '../components/ui'
 import { yearLabel } from '../lib/format'
 import { SHIFT_LABEL, stageLabel } from '../lib/labels'
 import { canSeeDepartment, entryOpenFor } from '../lib/perm'
@@ -106,7 +106,14 @@ export function DepartmentPage() {
         }
         title={`قسم ${dept.name}`}
         subtitle={`اختر المرحلة ونوع الدراسة لإدارة المواد والطلبة والدرجات — ${yearLabel(s.year?.label)}`}
-        actions={!entryOpenFor(s.settings, dept) && <Badge tone="danger" icon={<Lock className="size-3.5" />}>إدخال الدرجات مغلق لهذا القسم</Badge>}
+        actions={
+          <>
+            {!entryOpenFor(s.settings, dept) && <Badge tone="danger" icon={<Lock className="size-3.5" />}>إدخال الدرجات مغلق لهذا القسم</Badge>}
+            <Link to={`/departments/${dept.id}/plan`}>
+              <Button icon={<BookMarked className="size-4" />}>الخطة الدراسية</Button>
+            </Link>
+          </>
+        }
       />
       {progressQ.isLoading ? (
         <LoadingBlock />

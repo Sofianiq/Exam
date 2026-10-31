@@ -14,6 +14,8 @@ export interface Department {
   stages: number
   entry_open: boolean
   sort: number
+  /** اسم رئيس القسم (يُطبع في نتيجة الطالب) */
+  head_name: string | null
 }
 
 export interface AcademicYear {
@@ -48,6 +50,10 @@ export interface Settings {
   average_mode: 'simple' | 'weighted'
   idle_minutes: number
   current_year_id: string | null
+  /** سقف درجة الدور الثاني (null = بدون سقف) */
+  second_round_cap: number | null
+  /** أقصى عدد مواد يُسمح بإكمالها؛ الرسوب في أكثر منها = راسب */
+  max_failed_subjects: number
 }
 
 /** صف دراسي: سنة + قسم + مرحلة + دراسة */
@@ -84,12 +90,31 @@ export interface Subject extends ClassKey {
   reviewed_at: string | null
   reviewed_by: string | null
   sort: number
+  r2_status: SubjectStatus
+  r2_note: string | null
+  r2_submitted_at: string | null
+  r2_reviewed_at: string | null
+  r2_reviewed_by: string | null
 }
 
 export type SubjectInput = Omit<
   Subject,
-  'id' | 'final_max' | 'status' | 'status_note' | 'submitted_at' | 'submitted_by' | 'reviewed_at' | 'reviewed_by'
+  | 'id'
+  | 'final_max'
+  | 'status'
+  | 'status_note'
+  | 'submitted_at'
+  | 'submitted_by'
+  | 'reviewed_at'
+  | 'reviewed_by'
+  | 'r2_status'
+  | 'r2_note'
+  | 'r2_submitted_at'
+  | 'r2_reviewed_at'
+  | 'r2_reviewed_by'
 > & { id?: string }
+
+export type Round = 1 | 2
 
 export interface GradeValues {
   cw_theory: number | null
@@ -98,6 +123,10 @@ export interface GradeValues {
   final_theory: number | null
   special: SpecialCode | null
   note: string | null
+  /** الدور الثاني: يُعاد الامتحان النهائي فقط والسعي ثابت */
+  r2_final_practical: number | null
+  r2_final_theory: number | null
+  r2_special: SpecialCode | null
 }
 
 export interface Grade extends GradeValues {
@@ -125,7 +154,28 @@ export interface SubjectProgress {
   n_fail: number
   n_special: number
   avg_total: number | null
+  r2_status: SubjectStatus
+  n_r2_needed: number
+  n_r2_done: number
 }
+
+/** مادة في الخطة الدراسية للقسم (تُستورد منها مواد كل سنة) */
+export interface CurriculumItem {
+  id: string
+  department_id: string
+  stage: number
+  term: Term
+  sort: number
+  name: string
+  name_en: string | null
+  category: string | null
+  language: string | null
+  theory_hours: number
+  practical_hours: number
+  units: number
+}
+
+export type CurriculumInput = Omit<CurriculumItem, 'id'> & { id?: string }
 
 export interface AuditEntry {
   id: number
@@ -167,3 +217,4 @@ export interface AccountUpdate {
 }
 
 export type GradeComponent = 'cw_theory' | 'cw_practical' | 'final_practical' | 'final_theory'
+export type R2Component = 'r2_final_practical' | 'r2_final_theory'

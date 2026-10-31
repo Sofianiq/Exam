@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeArabic, parseClipboardGrid, parseGradeInput, parseNameList, splitDuplicates } from './parse'
+import { normalizeArabic, parseClipboardGrid, parseGradeInput, parseNameList, parsePlanRows, splitDuplicates } from './parse'
 
 describe('parseNameList', () => {
   it('keeps the pasted order and cleans spaces', () => {
@@ -55,6 +55,23 @@ describe('parseClipboardGrid', () => {
     expect(parseClipboardGrid('17\t13\r\n11\t9\r\n')).toEqual([
       ['17', '13'],
       ['11', '9'],
+    ])
+  })
+})
+
+describe('parsePlanRows', () => {
+  it('reads rows copied from the study-plan table in Word', () => {
+    const text = [
+      'ت\tاسم المادة\tLecture name\tنوعها\tلغة التدريس\tن\tع\tالمجموع\tعدد الوحدات',
+      '1\tعلم التغذية 1\tNutrition 1\tتخصصية / اساسية\tEnglish\t2\t4\t6\t4',
+      '3\tعلم الدوائيات 1\tPharmacology 1\tتخصصية / مساعدة\tEnglish\t2\t2\t4\t3',
+      '7\tجرائم نظام البعث في العراق\tCrimes of The Baath Regime in Iraq\tعامة\tالعربية\t2\t-\t2\t2',
+      '\t\t\t\t\t14\t20\t34\t24',
+    ].join('\n')
+    expect(parsePlanRows(text)).toEqual([
+      { name: 'علم التغذية 1', name_en: 'Nutrition 1', category: 'تخصصية / اساسية', language: 'English', theory_hours: 2, practical_hours: 4, units: 4 },
+      { name: 'علم الدوائيات 1', name_en: 'Pharmacology 1', category: 'تخصصية / مساعدة', language: 'English', theory_hours: 2, practical_hours: 2, units: 3 },
+      { name: 'جرائم نظام البعث في العراق', name_en: 'Crimes of The Baath Regime in Iraq', category: 'عامة', language: 'العربية', theory_hours: 2, practical_hours: 0, units: 2 },
     ])
   })
 })

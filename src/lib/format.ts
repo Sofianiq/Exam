@@ -33,3 +33,11 @@ export function classLabel(dept: Pick<Department, 'name'> | undefined, stage: nu
 
 /** يعرض السنة بالترتيب الصحيح داخل النص العربي (عزل اتجاه النص) */
 export const yearLabel = (label: string | undefined) => (label ? `\u2066${label.replace('-', ' - ')}\u2069` : '')
+
+/** عدد الوحدات بصيغة عربية سليمة: وحدة واحدة، وحدتان، 3 وحدات، 11 وحدة */
+export function unitsLabel(n: number | null | undefined): string {
+  if (n == null) return ''
+  if (n === 1) return 'وحدة واحدة'
+  if (n === 2) return 'وحدتان'
+  return n >= 3 && n <= 10 ? `${n} وحدات` : `${n} وحدة`
+}

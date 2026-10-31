@@ -33,7 +33,7 @@ export function ProgressPage() {
         a.term - b.term ||
         a.sort - b.sort,
     )
-  const empty: SubjectProgress = { subject_id: '', year_id: '', department_id: '', stage: 1, shift: 'morning', term: 1, status: 'draft', n_students: 0, n_complete: 0, n_pass: 0, n_fail: 0, n_special: 0, avg_total: null }
+  const empty: SubjectProgress = { subject_id: '', year_id: '', department_id: '', stage: 1, shift: 'morning', term: 1, status: 'draft', n_students: 0, n_complete: 0, n_pass: 0, n_fail: 0, n_special: 0, avg_total: null, r2_status: 'draft', n_r2_needed: 0, n_r2_done: 0 }
   const prog = (id: string) => pmap.get(id) ?? empty
 
   const teacherRows = useMemoTeachers(list, prog)

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { canManageRole, canManageUser, gradeEditBlock, manageableRoles, workflowActions } from './perm'
+import { canManageRole, canManageUser, gradeEditBlock, gradeEditBlockR2, manageableRoles, workflowActions } from './perm'
 import type { Role } from './types'
 
 const who = (role: Role, department_id: string | null = null, id = `u-${role}`) => ({ id, role, department_id })
-const subject = (status: 'draft' | 'submitted' | 'returned' | 'approved' = 'draft') => ({ department_id: 'rad', teacher_ids: ['t1'], status })
+type St = 'draft' | 'submitted' | 'returned' | 'approved'
+const subject = (status: St = 'draft', r2_status: St = 'draft') => ({ department_id: 'rad', teacher_ids: ['t1'], status, r2_status })
 const open = { entry_open: true }
 const closed = { entry_open: false }
 
@@ -46,6 +47,23 @@ describe('workflowActions', () => {
   it('teacher submits drafts but not after closing', () => {
     expect(workflowActions(who('teacher', 'rad', 't1'), subject('draft'), open, open).submit).toBe(true)
     expect(workflowActions(who('teacher', 'rad', 't1'), subject('draft'), closed, open).submit).toBe(false)
+  })
+})
+
+describe('second round', () => {
+  it('opens round-2 entry only after round 1 is approved', () => {
+    const t = who('teacher', 'rad', 't1')
+    expect(gradeEditBlockR2(t, subject('submitted'), open, open)).toMatch(/اعتماد نتائج الدور الأول/)
+    expect(gradeEditBlockR2(t, subject('approved'), open, open)).toBeNull()
+    expect(gradeEditBlockR2(t, subject('approved', 'submitted'), open, open)).toMatch(/الدور الثاني مرسلة/)
+    expect(gradeEditBlockR2(t, subject('approved'), closed, open)).toMatch(/مغلق/)
+  })
+  it('has its own workflow', () => {
+    const t = who('teacher', 'rad', 't1')
+    expect(workflowActions(t, subject('approved'), open, open, 2).submit).toBe(true)
+    expect(workflowActions(t, subject('approved'), open, open, 1).submit).toBe(false)
+    expect(workflowActions(who('committee'), subject('approved', 'submitted'), open, open, 2).approve).toBe(true)
+    expect(workflowActions(who('committee'), subject('draft', 'submitted'), open, open, 2).approve).toBe(false)
   })
 })
 

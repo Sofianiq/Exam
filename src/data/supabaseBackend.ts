@@ -7,10 +7,13 @@ import type {
   AuditEntry,
   AuditFilter,
   ClassKey,
+  CurriculumInput,
+  CurriculumItem,
   Department,
   Grade,
   GradeRowInput,
   Profile,
+  Round,
   Settings,
   Student,
   Subject,
@@ -49,6 +52,7 @@ export function translateError(e: PgError | Error | unknown): AppError {
     if (/subjects/.test(msg + (err.details ?? ''))) return new AppError('توجد مادة بنفس الاسم في هذا الصف والفصل.')
     if (/academic_years/.test(msg + (err.details ?? ''))) return new AppError('هذه السنة الدراسية موجودة مسبقاً.')
     if (/departments/.test(msg + (err.details ?? ''))) return new AppError('يوجد قسم بنفس الاسم أو الرمز.')
+    if (/curriculum/.test(msg + (err.details ?? ''))) return new AppError('توجد مادة بنفس الاسم في هذه المرحلة والفصل من الخطة.')
     return new AppError('القيمة موجودة مسبقاً.')
   }
   if (err.code === '23503') return new AppError('لا يمكن تنفيذ العملية لوجود بيانات مرتبطة.')
@@ -160,7 +164,12 @@ export class SupabaseBackend implements Backend {
   // ---------- الإعدادات ----------
   async getSettings(): Promise<Settings> {
     const s = must(await this.sb.from('settings').select('*').eq('id', 1).single()) as Settings
-    return { ...s, pass_mark: Number(s.pass_mark) }
+    return {
+      ...s,
+      pass_mark: Number(s.pass_mark),
+      second_round_cap: s.second_round_cap == null ? null : Number(s.second_round_cap),
+      max_failed_subjects: s.max_failed_subjects ?? 2,
+    }
   }
 
   async updateSettings(patch: Partial<Omit<Settings, 'entry_open'>>): Promise<void> {
@@ -184,6 +193,7 @@ export class SupabaseBackend implements Backend {
       has_evening: d.has_evening ?? false,
       stages: d.stages ?? 4,
       sort: d.sort ?? 0,
+      head_name: d.head_name?.trim() || null,
     }
     if (d.id) must(await this.sb.from('departments').update(payload).eq('id', d.id).select('id').single())
     else must(await this.sb.from('departments').insert(payload).select('id').single())
@@ -254,6 +264,24 @@ export class SupabaseBackend implements Backend {
         .order('id')
         .range(a, b),
     )
+  }
+
+  async getStudent(id: string): Promise<Student | null> {
+    return must(await this.sb.from('students').select('*').eq('id', id).maybeSingle()) as Student | null
+  }
+
+  async searchStudents(yearId: string, query: string): Promise<Student[]> {
+    const term = query.replace(/[,()%*\\]/g, ' ').trim()
+    if (term.length < 2) return []
+    return must(
+      await this.sb
+        .from('students')
+        .select('*')
+        .eq('year_id', yearId)
+        .ilike('full_name', `%${term}%`)
+        .order('full_name')
+        .limit(60),
+    ) as Student[]
   }
 
   async addStudents(k: ClassKey, names: string[]) {
@@ -328,8 +356,55 @@ export class SupabaseBackend implements Backend {
     })
   }
 
-  async setSubjectStatus(id: string, status: SubjectStatus, note?: string | null): Promise<void> {
-    await this.rpc('set_subject_status', { p_subject_id: id, p_status: status, p_note: note ?? null })
+  async setSubjectStatus(id: string, status: SubjectStatus, note?: string | null, round: Round = 1): Promise<void> {
+    await this.rpc('set_subject_status', { p_subject_id: id, p_status: status, p_note: note ?? null, p_round: round })
+  }
+
+  // ---------- الخطة الدراسية ----------
+  async listCurriculum(departmentId: string): Promise<CurriculumItem[]> {
+    const rows = await fetchAll<CurriculumItem>((a, b) =>
+      this.sb
+        .from('curriculum')
+        .select('*')
+        .eq('department_id', departmentId)
+        .order('stage')
+        .order('term')
+        .order('sort')
+        .order('id')
+        .range(a, b),
+    )
+    return rows.map((c) => ({
+      ...c,
+      theory_hours: Number(c.theory_hours),
+      practical_hours: Number(c.practical_hours),
+      units: Number(c.units),
+    }))
+  }
+
+  async saveCurriculum(c: CurriculumInput): Promise<void> {
+    const payload = {
+      department_id: c.department_id,
+      stage: c.stage,
+      term: c.term,
+      sort: c.sort,
+      name: c.name.trim(),
+      name_en: c.name_en?.trim() || null,
+      category: c.category?.trim() || null,
+      language: c.language?.trim() || null,
+      theory_hours: c.theory_hours,
+      practical_hours: c.practical_hours,
+      units: c.units,
+    }
+    const res = c.id
+      ? await this.sb.from('curriculum').update(payload).eq('id', c.id).select('id')
+      : await this.sb.from('curriculum').insert(payload).select('id')
+    const rows = must(res)
+    if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
+  }
+
+  async deleteCurriculum(id: string): Promise<void> {
+    const rows = must(await this.sb.from('curriculum').delete().eq('id', id).select('id'))
+    if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
   }
 
   // ---------- الدرجات ----------
@@ -354,7 +429,13 @@ export class SupabaseBackend implements Backend {
     const rows = await fetchAll<SubjectProgress>((a, b) =>
       this.sb.from('subject_progress').select('*').eq('year_id', yearId).order('subject_id').range(a, b),
     )
-    return rows.map((r) => ({ ...r, avg_total: r.avg_total == null ? null : Number(r.avg_total) }))
+    return rows.map((r) => ({
+      ...r,
+      avg_total: r.avg_total == null ? null : Number(r.avg_total),
+      n_r2_needed: r.n_r2_needed ?? 0,
+      n_r2_done: r.n_r2_done ?? 0,
+      r2_status: r.r2_status ?? 'draft',
+    }))
   }
 
   async listAudit(f: AuditFilter): Promise<AuditEntry[]> {
@@ -398,6 +479,7 @@ const SNAPSHOT_TABLES: [string, string[]][] = [
   ['students', ['id']],
   ['subjects', ['id']],
   ['grades', ['subject_id', 'student_id']],
+  ['curriculum', ['id']],
 ]
 
 const num = (v: unknown) => (v == null ? null : Number(v))
@@ -421,5 +503,8 @@ function normalizeGrade(g: Grade): Grade {
     cw_practical: num(g.cw_practical),
     final_practical: num(g.final_practical),
     final_theory: num(g.final_theory),
+    r2_final_practical: num(g.r2_final_practical),
+    r2_final_theory: num(g.r2_final_theory),
+    r2_special: g.r2_special ?? null,
   }
 }

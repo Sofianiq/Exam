@@ -1,7 +1,9 @@
 // تصدير ملفات Excel بنفس تنسيق سجلات الدرجات المعتمدة في الكلية (يُحمَّل عند الطلب فقط)
 import type * as ExcelJS from 'exceljs'
-import { componentsOf, type MasterRow, type RowResult, type SheetStats } from './calc'
+import type { ClassResults } from '../app/results'
+import { componentsOf, type RowResult, type SheetStats } from './calc'
 import { SHIFT_LONG, SPECIAL_LABEL, TERM_LABEL, stageShort } from './labels'
+import { unitsLabel } from './format'
 import type { GradeValues, Settings, Student, Subject } from './types'
 
 const GREEN = 'FF0B5A3A'
@@ -125,7 +127,11 @@ function writeSubjectSheet(ws: ExcelJS.Worksheet, e: SubjectExport) {
   const fin = comps.filter((c) => c.group === 'final')
   const cwSum = cw.length > 1
   const finSum = fin.length > 1
-  const cols = 2 + cw.length + (cwSum ? 1 : 0) + fin.length + (finSum ? 1 : 0) + 3
+  const hasR2 = e.students.some((st) => {
+    const r = e.rows[st.id]?.result
+    return !!r && r.needsR2 && r.r2Complete
+  })
+  const cols = 2 + cw.length + (cwSum ? 1 : 0) + fin.length + (finSum ? 1 : 0) + (hasR2 ? 2 : 0) + 3
   ws.columns = [{ width: 5 }, { width: 34 }, ...Array.from({ length: cols - 3 }, () => ({ width: 11 })), { width: 22 }]
 
   titleRow(ws, 1, cols, `${e.settings.university_name} — ${e.settings.college_name}`)
@@ -158,6 +164,12 @@ function writeSubjectSheet(ws: ExcelJS.Worksheet, e: SubjectExport) {
   }
   group(`السعي الفصلي (${s.coursework_max}%)`, cw, cwSum, s.coursework_max)
   group(`الامتحان النهائي (${100 - s.coursework_max}%)`, fin, finSum, 100 - s.coursework_max)
+  if (hasR2) {
+    ws.mergeCells(6, col, 6, col + 1)
+    headerCell(ws.getCell(6, col), 'الدور الثاني')
+    headerCell(ws.getCell(7, col++), `النهائي\n(${100 - s.coursework_max})`)
+    headerCell(ws.getCell(7, col++), 'المجموع\n(100)')
+  }
   for (const t of ['الدرجة النهائية (100)', 'التقدير', 'ملاحظات']) {
     ws.mergeCells(6, col, 7, col)
     headerCell(ws.getCell(6, col++), t)
@@ -171,7 +183,7 @@ function writeSubjectSheet(ws: ExcelJS.Worksheet, e: SubjectExport) {
     const v = row?.values
     const res = row?.result
     const zebra = i % 2 === 1
-    const fail = res?.total != null && res.total < e.settings.pass_mark
+    const fail = res?.finalTotal != null && res.finalTotal < e.settings.pass_mark
     let c = 1
     bodyCell(ws.getCell(r, c++), i + 1, { zebra })
     bodyCell(ws.getCell(r, c++), st.full_name, { left: true, zebra })
@@ -179,8 +191,13 @@ function writeSubjectSheet(ws: ExcelJS.Worksheet, e: SubjectExport) {
     if (cwSum) bodyCell(ws.getCell(r, c++), res?.coursework ?? null, { bold: true, zebra })
     fin.forEach((k) => bodyCell(ws.getCell(r, c++), v?.[k.key] ?? null, { zebra }))
     if (finSum) bodyCell(ws.getCell(r, c++), res?.finalSum ?? null, { bold: true, zebra })
-    bodyCell(ws.getCell(r, c++), res?.special ? SPECIAL_LABEL[res.special] : res?.total ?? null, { bold: true, red: fail, zebra })
-    bodyCell(ws.getCell(r, c++), res?.label ?? '', { red: fail, zebra })
+    if (hasR2) {
+      const show = !!res?.needsR2 && res.r2Complete
+      bodyCell(ws.getCell(r, c++), show ? (res!.r2Special ? SPECIAL_LABEL[res!.r2Special] : res!.r2FinalSum) : null, { zebra })
+      bodyCell(ws.getCell(r, c++), show ? res!.r2Total : null, { bold: true, zebra })
+    }
+    bodyCell(ws.getCell(r, c++), res?.finalSpecial ? SPECIAL_LABEL[res.finalSpecial] : res?.finalTotal ?? null, { bold: true, red: fail, zebra })
+    bodyCell(ws.getCell(r, c++), res?.finalLabel ?? '', { red: fail, zebra })
     bodyCell(ws.getCell(r, c++), [st.status !== 'active' ? (st.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : '', v?.note ?? ''].filter(Boolean).join(' — '), { left: true, zebra })
   })
 
@@ -217,11 +234,9 @@ export interface MasterExport {
   stage: number
   shift: Student['shift']
   termLabel: string
-  subjects: Subject[]
-  students: Student[]
-  rows: MasterRow[]
-  ranks: (number | null)[]
-  subjectStats: SheetStats[]
+  /** عرض مختصر (الدرجة النهائية فقط لكل مادة) — للنتيجة السنوية */
+  compact: boolean
+  data: ClassResults
   subjectSheets?: SubjectExport[]
 }
 
@@ -229,13 +244,19 @@ export async function exportMasterXlsx(e: MasterExport) {
   const wb = await workbook()
   const used = new Set<string>()
   const ws = newSheet(wb, safeSheetName('الماستر شيت', used), true)
-  const n = e.subjects.length
-  const cols = 2 + n + 4
-  ws.columns = [{ width: 5 }, { width: 32 }, ...e.subjects.map(() => ({ width: 13 })), { width: 10 }, { width: 10 }, { width: 8 }, { width: 26 }]
-  titleRow(ws, 1, cols, `${e.settings.university_name} — ${e.settings.college_name}`)
-  titleRow(ws, 2, cols, `قسم ${e.deptName}`, 12, LIGHT, GREEN)
-  titleRow(ws, 3, cols, `الماستر شيت لدرجات الطلبة — جميع المواد — المرحلة ${stageShort(e.stage)} / ${e.termLabel}`, 12, LIGHT, 'FF000000')
-  infoRow(ws, 4, cols, [
+  const { subjects, rows, subjectStats } = e.data
+  const per = e.compact ? 1 : 3
+  const n = subjects.length
+  const first = 3
+  const after = first + n * per
+  const cols = after + 3 // مجموع، معدل، النتيجة، ملاحظات (بعد آخر عمود مواد)
+  const pass = e.settings.pass_mark
+  ws.columns = [{ width: 5 }, { width: 30 }, ...Array.from({ length: n * per }, () => ({ width: e.compact ? 11 : 7 })), { width: 10 }, { width: 9 }, { width: 26 }, { width: 18 }]
+  ws.views = [{ rightToLeft: true, state: 'frozen', xSplit: 2, ySplit: 7 }]
+  titleRow(ws, 1, cols + 1, `${e.settings.university_name} — ${e.settings.college_name}`)
+  titleRow(ws, 2, cols + 1, `قسم ${e.deptName}`, 12, LIGHT, GREEN)
+  titleRow(ws, 3, cols + 1, `الماستر شيت لدرجات الطلبة — المرحلة ${stageShort(e.stage)} / ${e.termLabel}`, 12, LIGHT, 'FF000000')
+  infoRow(ws, 4, cols + 1, [
     ['نوع الدراسة', SHIFT_LONG[e.shift]],
     ['العام الدراسي', e.yearLabel],
     ['عدد المواد', String(n)],
@@ -244,44 +265,75 @@ export async function exportMasterXlsx(e: MasterExport) {
   headerCell(ws.getCell(6, 1), 'ت')
   ws.mergeCells(6, 2, 7, 2)
   headerCell(ws.getCell(6, 2), 'اسم الطالب')
-  if (n > 0) {
-    if (n > 1) ws.mergeCells(6, 3, 6, 2 + n)
-    headerCell(ws.getCell(6, 3), 'درجات المواد الدراسية (من 100)')
-    e.subjects.forEach((s, i) => headerCell(ws.getCell(7, 3 + i), s.name))
-  }
-  ws.mergeCells(6, 3 + n, 6, cols)
-  headerCell(ws.getCell(6, 3 + n), 'ملخص الأداء')
-  ;['المعدل', `عدد النجاح (من ${n})`, 'الترتيب', 'الحالة العامة'].forEach((t, i) => headerCell(ws.getCell(7, 3 + n + i), t))
-  ws.getRow(7).height = 48
+  subjects.forEach((x, j) => {
+    const c = first + j * per
+    if (per > 1) ws.mergeCells(6, c, 6, c + per - 1)
+    headerCell(ws.getCell(6, c), `${x.name}${x.units ? ` (${unitsLabel(x.units)})` : ''}`)
+    if (per > 1) {
+      headerCell(ws.getCell(7, c), `سعي\n(${x.coursework_max})`)
+      headerCell(ws.getCell(7, c + 1), `نهائي\n(${x.final_max + x.practical_max})`)
+      headerCell(ws.getCell(7, c + 2), 'المجموع')
+    } else headerCell(ws.getCell(7, c), 'الدرجة')
+  })
+  ;['مجموع الدرجات', 'المعدل', 'النتيجة', 'الملاحظات'].forEach((t, i) => {
+    ws.mergeCells(6, after + i, 7, after + i)
+    headerCell(ws.getCell(6, after + i), t)
+  })
+  ws.getRow(6).height = 42
+  ws.getRow(7).height = 30
 
-  e.students.forEach((st, i) => {
-    const r = 8 + i
-    const m = e.rows[i]
+  let r = 8
+  rows.forEach((row, i) => {
     const zebra = i % 2 === 1
+    const hasR2 = !e.compact && row.results.some((x) => x.complete && x.needsR2)
+    const span = hasR2 ? 2 : 1
+    const merge = (c: number) => span > 1 && ws.mergeCells(r, c, r + 1, c)
+    merge(1)
     bodyCell(ws.getCell(r, 1), i + 1, { zebra })
-    bodyCell(ws.getCell(r, 2), st.full_name, { left: true, zebra })
-    m.cells.forEach((c, j) =>
-      bodyCell(ws.getCell(r, 3 + j), c.special ? SPECIAL_LABEL[c.special] : c.total, { red: c.total != null && c.total < e.settings.pass_mark, zebra }),
-    )
-    bodyCell(ws.getCell(r, 3 + n), m.average, { bold: true, zebra })
-    bodyCell(ws.getCell(r, 4 + n), m.cells.some((c) => c.total != null) ? m.passed : null, { zebra })
-    bodyCell(ws.getCell(r, 5 + n), e.ranks[i], { zebra })
-    bodyCell(ws.getCell(r, 6 + n), m.status, { red: m.failed > 0, zebra, left: true })
+    merge(2)
+    bodyCell(ws.getCell(r, 2), row.student.full_name, { left: true, zebra })
+    row.results.forEach((x, j) => {
+      const c = first + j * per
+      if (e.compact) {
+        bodyCell(ws.getCell(r, c), x.finalSpecial ? SPECIAL_LABEL[x.finalSpecial] : x.finalTotal, { red: x.finalTotal != null && x.finalTotal < pass, zebra })
+        return
+      }
+      bodyCell(ws.getCell(r, c), x.coursework, { zebra })
+      bodyCell(ws.getCell(r, c + 1), x.special ? SPECIAL_LABEL[x.special] : x.finalSum, { zebra })
+      bodyCell(ws.getCell(r, c + 2), x.total, { bold: true, red: x.total != null && x.total < pass, zebra })
+      if (hasR2) {
+        const show = x.complete && x.needsR2
+        bodyCell(ws.getCell(r + 1, c), show ? 'د2' : '', { zebra: true })
+        bodyCell(ws.getCell(r + 1, c + 1), show ? (x.r2Special ? SPECIAL_LABEL[x.r2Special] : x.r2FinalSum) : null, { zebra: true })
+        bodyCell(ws.getCell(r + 1, c + 2), show ? x.r2Total : null, { bold: true, red: show && x.r2Total != null && x.r2Total < pass, zebra: true })
+      }
+    })
+    const st = row.student
+    const resultText = st.status !== 'active' ? (st.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : row.summary.statusText
+    ;[row.summary.sum, row.summary.average, resultText, st.notes ?? ''].forEach((v, k) => {
+      merge(after + k)
+      bodyCell(ws.getCell(r, after + k), v, { bold: k < 2, left: k >= 2, red: k === 2 && row.summary.status === 'fail', zebra })
+    })
+    r += span
   })
 
-  let r = 8 + e.students.length + 1
-  titleRow(ws, r++, cols, 'إحصائيات المواد الدراسية', 11, LIGHT, GREEN)
+  r += 1
+  titleRow(ws, r++, cols + 1, 'إحصائيات المواد الدراسية', 11, LIGHT, GREEN)
   const statRow = (label: string, f: (s: SheetStats) => ExcelJS.CellValue) => {
     ws.mergeCells(r, 1, r, 2)
     bodyCell(ws.getCell(r, 1), label, { bold: true })
-    e.subjectStats.forEach((s, i) => bodyCell(ws.getCell(r, 3 + i), f(s)))
+    subjectStats.forEach((x, j) => {
+      const c = first + j * per
+      if (per > 1) ws.mergeCells(r, c, r, c + per - 1)
+      bodyCell(ws.getCell(r, c), f(x))
+    })
     r++
   }
-  statRow('المعدل العام', (s) => s.avg)
-  statRow('عدد الناجحين', (s) => s.pass)
-  statRow('عدد الراسبين', (s) => s.fail)
-  statRow('نسبة النجاح', (s) => (s.passRate == null ? '—' : `${(s.passRate * 100).toFixed(1)}%`))
-  signatures(ws, r + 2, cols, ['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد'])
+  statRow('المعدل العام', (x) => x.avg)
+  statRow('عدد الناجحين', (x) => x.pass)
+  statRow('عدد الراسبين', (x) => x.fail)
+  statRow('نسبة النجاح', (x) => (x.passRate == null ? '—' : `${(x.passRate * 100).toFixed(1)}%`))
+  signatures(ws, r + 2, cols + 1, ['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد'])
 
   for (const sub of e.subjectSheets ?? []) {
     writeSubjectSheet(newSheet(wb, safeSheetName(sub.subject.name, used)), sub)

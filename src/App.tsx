@@ -11,6 +11,7 @@ import type { Profile } from './lib/types'
 import { AuditPage } from './pages/AuditPage'
 import { ClassPage } from './pages/ClassPage'
 import { ControlPage } from './pages/ControlPage'
+import { CurriculumPage } from './pages/CurriculumPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DepartmentPage, DepartmentsPage } from './pages/DepartmentsPage'
 import { GradeSheetPage } from './pages/GradeSheetPage'
@@ -18,8 +19,11 @@ import { LoginPage } from './pages/LoginPage'
 import { MySubjectsPage } from './pages/MySubjectsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { ProgressPage } from './pages/ProgressPage'
+import { ResultsBatchPage } from './pages/ResultsBatchPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { StudentPage } from './pages/StudentPage'
+import { StudentsSearchPage } from './pages/StudentsSearchPage'
 import { UsersPage } from './pages/UsersPage'
 
 const queryClient = new QueryClient({
@@ -37,7 +41,11 @@ const router = createHashRouter([
       { path: 'my-subjects', element: <MySubjectsPage /> },
       { path: 'departments', element: <DepartmentsPage /> },
       { path: 'departments/:deptId', element: <DepartmentPage /> },
+      { path: 'departments/:deptId/plan', element: <CurriculumPage /> },
       { path: 'class/:deptId/:stage/:shift', element: <ClassPage /> },
+      { path: 'class/:deptId/:stage/:shift/results', element: <ResultsBatchPage /> },
+      { path: 'students', element: <StudentsSearchPage /> },
+      { path: 'student/:studentId', element: <StudentPage /> },
       { path: 'subjects/:subjectId', element: <GradeSheetPage /> },
       { path: 'review', element: <ReviewPage /> },
       { path: 'progress', element: <ProgressPage /> },

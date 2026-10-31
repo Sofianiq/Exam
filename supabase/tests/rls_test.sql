@@ -192,6 +192,51 @@ update public.subjects set name = 'اللغة العربية (1)' where id = :'s
 select t.ok(public.copy_subjects(:'y', :'rad', 2::smallint, 'morning', 2::smallint, :'y', :'rad', 2::smallint, 'evening', 2::smallint) = 2, 'copy subjects to evening');
 select t.ok((select count(*) = 2 and bool_and(status = 'draft') from public.subjects where shift = 'evening'), 'copied subjects are drafts');
 
+-- ===== الدور الثاني (السعي ثابت) =====
+:as_radhead
+select id as st3 from public.students where department_id = :'rad' and seq = 3 \gset
+select public.save_grades(:'s2', format('[{"student_id":"%s","cw_theory":10,"final_theory":20}]', :'st3')::jsonb);
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":10,"final_theory":20,"r2_final_theory":50}]')$$, :'s2', :'st3'), '%اعتماد نتائج الدور الأول%');
+select t.expect_error(format($$select public.set_subject_status(%L, 'submitted', null, 2::smallint)$$, :'s2'), '%اعتماد نتائج الدور الأول%');
+select public.set_subject_status(:'s2', 'submitted');
+:as_cmt
+select public.set_subject_status(:'s2', 'approved');
+:as_radhead
+select public.save_grades(:'s2', format('[{"student_id":"%s","cw_theory":10,"final_theory":20,"r2_final_theory":50}]', :'st3')::jsonb);
+select t.ok((select public.grade_r2_total(s, g) from public.subjects s join public.grades g on g.subject_id = s.id
+             where s.id = :'s2' and g.student_id = :'st3') = 60, 'round-2 total = fixed coursework + round-2 final');
+select public.save_grades(:'s2', format('[{"student_id":"%s","special":"absent","cw_theory":20,"r2_final_theory":40}]', :'st2')::jsonb);
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":25,"final_theory":60,"r2_final_theory":50}]')$$, :'s2', :'st1'), '%ناجح في الدور الأول%');
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":10,"final_theory":20,"r2_final_theory":80}]')$$, :'s2', :'st3'), '%بين 0 و 70%');
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":12,"final_theory":20,"r2_final_theory":50}]')$$, :'s2', :'st3'), '%معتمدة%');
+select t.ok((select n_r2_needed = 2 and n_r2_done = 2 and r2_status = 'draft' from public.subject_progress where subject_id = :'s2'),
+            'progress counts round-2 students');
+select t.expect_error(format($$update public.subjects set r2_status = 'approved' where id = %L$$, :'s2'), '%أزرار%');
+select public.set_subject_status(:'s2', 'submitted', null, 2::smallint);
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":10,"final_theory":20,"r2_final_theory":55}]')$$, :'s2', :'st3'), '%الدور الثاني مرسلة%');
+:as_cmt
+select public.set_subject_status(:'s2', 'approved', null, 2::smallint);
+select t.ok((select status = 'approved' and r2_status = 'approved' from public.subjects where id = :'s2'), 'round 2 approved');
+select t.ok((select count(*) = 1 from public.audit_log where action = 'subject.approved' and (details ->> 'round')::int = 2), 'round-2 approval audited');
+:as_admin
+update public.settings set second_round_cap = 50 where id = 1;
+select t.ok((select public.grade_r2_total(s, g) from public.subjects s join public.grades g on g.subject_id = s.id
+             where s.id = :'s2' and g.student_id = :'st3') = 50, 'second-round cap applied');
+update public.settings set second_round_cap = null where id = 1;
+
+-- ===== الخطة الدراسية =====
+select t.ok((select count(*) from public.curriculum c join public.departments d on d.id = c.department_id where d.code = 'CHT') = 31,
+            'CHT study plan seeded (31 subjects)');
+select t.ok((select sum(units) from public.curriculum c join public.departments d on d.id = c.department_id
+             where d.code = 'CHT' and stage = 2 and term = 1) = 24, 'stage 2 / term 1 = 24 units');
+:as_radhead
+insert into public.curriculum (department_id, stage, term, name, units) values (:'rad', 2, 1, 'مادة من الخطة', 3);
+select t.expect_error(format($$insert into public.curriculum (department_id, stage, term, name, units) values (%L, 1, 1, 'x', 1)$$, :'ans'), '%row-level security%');
+:as_t1
+select count(*) as cur_n from public.curriculum \gset
+delete from public.curriculum;
+select t.ok((select count(*) from public.curriculum) = :cur_n and :cur_n > 0, 'teachers read but cannot change the study plan');
+
 -- ===== كلمات المرور =====
 :as_t1
 select t.expect_error($$select public.change_my_password('wrong', 'abcdef1')$$, '%غير صحيحة%');
@@ -244,8 +289,8 @@ select t.expect_error($$select public.save_grades(gen_random_uuid(), '[]')$$, '%
 update public.settings set pass_mark = 60 where id = 1;
 select t.ok((select pass_mark from public.settings) = 50, 'assistant dean cannot change settings (silently filtered)');
 :as_admin
-update public.settings set rounding = 'round' where id = 1;
-select t.ok((select count(*) = 1 from public.audit_log where action = 'settings.update'), 'settings audited');
+update public.settings set rounding = 'ceil' where id = 1;
+select t.ok((select count(*) >= 1 from public.audit_log where action = 'settings.update' and details -> 'new' ->> 'rounding' = 'ceil'), 'settings audited');
 select t.ok((select count(*) >= 2 from public.audit_log where action in ('entry.close','entry.open')), 'lock audited');
 
 -- ===== حذف السنة (تسلسلي) =====

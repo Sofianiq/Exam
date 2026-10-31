@@ -1,5 +1,5 @@
 // قواعد الصلاحيات في الواجهة — مطابقة لما تفرضه قاعدة البيانات في supabase/schema.sql
-import type { Department, Profile, Role, Settings, Subject } from './types'
+import type { Department, Profile, Role, Round, Settings, Subject } from './types'
 
 type Who = Pick<Profile, 'id' | 'role' | 'department_id'>
 
@@ -73,18 +73,40 @@ export function gradeEditBlock(
   return null
 }
 
-export function workflowActions(
+/** سبب منع تعديل درجات الدور الثاني أو null إذا كان مسموحاً */
+export function gradeEditBlockR2(
   p: Who | null | undefined,
-  s: Pick<Subject, 'department_id' | 'teacher_ids' | 'status'>,
+  s: Pick<Subject, 'department_id' | 'teacher_ids' | 'status' | 'r2_status'>,
   settings: Pick<Settings, 'entry_open'> | null | undefined,
   dept: Pick<Department, 'entry_open'> | null | undefined,
+): string | null {
+  if (!p) return 'غير مسجل الدخول'
+  if (!canWriteSubject(p, s)) return 'ليست لديك صلاحية على درجات هذه المادة'
+  if (s.status !== 'approved') return 'يجب اعتماد نتائج الدور الأول قبل إدخال درجات الدور الثاني'
+  if (isSuper(p)) return null
+  if (!(settings?.entry_open ?? true)) return 'إدخال الدرجات مغلق حالياً من قبل الإدارة'
+  if (!(dept?.entry_open ?? true)) return 'إدخال الدرجات مغلق لهذا القسم'
+  if (s.r2_status === 'submitted') return 'قائمة الدور الثاني مرسلة إلى اللجنة الامتحانية ولا يمكن تعديلها'
+  if (s.r2_status === 'approved') return 'قائمة الدور الثاني معتمدة ولا يمكن تعديلها'
+  return null
+}
+
+export function workflowActions(
+  p: Who | null | undefined,
+  s: Pick<Subject, 'department_id' | 'teacher_ids' | 'status' | 'r2_status'>,
+  settings: Pick<Settings, 'entry_open'> | null | undefined,
+  dept: Pick<Department, 'entry_open'> | null | undefined,
+  round: Round = 1,
 ) {
   const review = canReview(p)
   const sup = isSuper(p)
+  if (round === 2 && s.status !== 'approved') return { submit: false, approve: false, giveBack: false, toDraft: false }
+  const status = round === 1 ? s.status : s.r2_status
+  const block = round === 1 ? gradeEditBlock(p, s, settings, dept) : gradeEditBlockR2(p, s, settings, dept)
   return {
-    submit: (s.status === 'draft' || s.status === 'returned') && gradeEditBlock(p, s, settings, dept) == null,
-    approve: review && (s.status === 'submitted' || (sup && (s.status === 'draft' || s.status === 'returned'))),
-    giveBack: review && (s.status === 'submitted' || (sup && s.status === 'approved')),
-    toDraft: sup && s.status !== 'draft',
+    submit: (status === 'draft' || status === 'returned') && block == null,
+    approve: review && (status === 'submitted' || (sup && (status === 'draft' || status === 'returned'))),
+    giveBack: review && (status === 'submitted' || (sup && status === 'approved')),
+    toDraft: sup && status !== 'draft',
   }
 }
