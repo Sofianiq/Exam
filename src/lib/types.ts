@@ -54,6 +54,8 @@ export interface Settings {
   second_round_cap: number | null
   /** أقصى عدد مواد يُسمح بإكمالها؛ الرسوب في أكثر منها = راسب */
   max_failed_subjects: number
+  /** حجب الدرجات عن التدريسيين عند غلق الإدخال */
+  hide_grades_when_closed: boolean
 }
 
 /** صف دراسي: سنة + قسم + مرحلة + دراسة */
@@ -90,6 +92,10 @@ export interface Subject extends ClassKey {
   reviewed_at: string | null
   reviewed_by: string | null
   sort: number
+  /** مادة تقويمية (وزارية): الامتحان النهائي وزاري */
+  ministerial: boolean
+  /** الحد الأدنى لدرجة الامتحان النهائي للنجاح في المادة (null = بلا شرط) */
+  final_min: number | null
   r2_status: SubjectStatus
   r2_note: string | null
   r2_submitted_at: string | null
@@ -173,6 +179,7 @@ export interface CurriculumItem {
   theory_hours: number
   practical_hours: number
   units: number
+  ministerial: boolean
 }
 
 export type CurriculumInput = Omit<CurriculumItem, 'id'> & { id?: string }
@@ -218,3 +225,24 @@ export interface AccountUpdate {
 
 export type GradeComponent = 'cw_theory' | 'cw_practical' | 'final_practical' | 'final_theory'
 export type R2Component = 'r2_final_practical' | 'r2_final_theory'
+
+export type AnnouncementLevel = 'info' | 'important' | 'urgent'
+export type AnnouncementAudience = 'all' | 'teachers' | 'heads'
+
+export interface Announcement {
+  id: string
+  title: string
+  body: string
+  level: AnnouncementLevel
+  /** null = لكل الأقسام */
+  department_id: string | null
+  audience: AnnouncementAudience
+  pinned: boolean
+  expires_at: string | null
+  created_by: string | null
+  created_by_name: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type AnnouncementInput = Pick<Announcement, 'title' | 'body' | 'level' | 'department_id' | 'audience' | 'pinned' | 'expires_at'> & { id?: string }

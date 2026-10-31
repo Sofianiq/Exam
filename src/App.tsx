@@ -8,6 +8,7 @@ import { LoadingBlock } from './components/ui'
 import { UpdateBanner } from './components/UpdateBanner'
 import { backend } from './data'
 import type { Profile } from './lib/types'
+import { AnnouncementsPage } from './pages/AnnouncementsPage'
 import { AuditPage } from './pages/AuditPage'
 import { ClassPage } from './pages/ClassPage'
 import { ControlPage } from './pages/ControlPage'
@@ -48,6 +49,7 @@ const router = createHashRouter([
       { path: 'student/:studentId', element: <StudentPage /> },
       { path: 'subjects/:subjectId', element: <GradeSheetPage /> },
       { path: 'review', element: <ReviewPage /> },
+      { path: 'announcements', element: <AnnouncementsPage /> },
       { path: 'progress', element: <ProgressPage /> },
       { path: 'control', element: <ControlPage /> },
       { path: 'users', element: <UsersPage /> },

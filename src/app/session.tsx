@@ -42,8 +42,9 @@ export function SessionProvider({
   fallback: ReactNode
 }) {
   const qc = useQueryClient()
-  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: () => backend.getSettings() })
-  const deptsQ = useQuery({ queryKey: ['departments'], queryFn: () => backend.listDepartments() })
+  // تُحدَّث دورياً ليظهر فتح الإدخال وغلقه (وحجب الدرجات) لدى المستخدمين دون إعادة تحميل الصفحة
+  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: () => backend.getSettings(), refetchInterval: 60_000 })
+  const deptsQ = useQuery({ queryKey: ['departments'], queryFn: () => backend.listDepartments(), refetchInterval: 60_000 })
   const yearsQ = useQuery({ queryKey: ['years'], queryFn: () => backend.listYears() })
   const profilesQ = useQuery({ queryKey: ['profiles'], queryFn: () => backend.listProfiles() })
 
@@ -57,6 +58,17 @@ export function SessionProvider({
 
   const years = yearsQ.data ?? []
   const settings = settingsQ.data
+
+  // عند فتح الإدخال أو غلقه تُعاد قراءة الدرجات (قد تُحجب عن التدريسي أو تظهر له)
+  const entryKey = settings ? `${settings.entry_open}|${(deptsQ.data ?? []).map((d) => +d.entry_open).join('')}` : ''
+  const prevEntry = useRef(entryKey)
+  useEffect(() => {
+    if (prevEntry.current && entryKey && prevEntry.current !== entryKey) {
+      void qc.invalidateQueries({ queryKey: ['grades'] })
+      void qc.invalidateQueries({ queryKey: ['progress'] })
+    }
+    prevEntry.current = entryKey
+  }, [entryKey, qc])
   const yearId =
     (yearPref && years.some((y) => y.id === yearPref) ? yearPref : null) ??
     (settings?.current_year_id && years.some((y) => y.id === settings.current_year_id) ? settings.current_year_id : null) ??

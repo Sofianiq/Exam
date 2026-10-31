@@ -183,7 +183,7 @@ function writeSubjectSheet(ws: ExcelJS.Worksheet, e: SubjectExport) {
     const v = row?.values
     const res = row?.result
     const zebra = i % 2 === 1
-    const fail = res?.finalTotal != null && res.finalTotal < e.settings.pass_mark
+    const fail = res?.finalTotal != null && res.finalPassed === false
     let c = 1
     bodyCell(ws.getCell(r, c++), i + 1, { zebra })
     bodyCell(ws.getCell(r, c++), st.full_name, { left: true, zebra })
@@ -250,7 +250,6 @@ export async function exportMasterXlsx(e: MasterExport) {
   const first = 3
   const after = first + n * per
   const cols = after + 3 // مجموع، معدل، النتيجة، ملاحظات (بعد آخر عمود مواد)
-  const pass = e.settings.pass_mark
   ws.columns = [{ width: 5 }, { width: 30 }, ...Array.from({ length: n * per }, () => ({ width: e.compact ? 11 : 7 })), { width: 10 }, { width: 9 }, { width: 26 }, { width: 18 }]
   ws.views = [{ rightToLeft: true, state: 'frozen', xSplit: 2, ySplit: 7 }]
   titleRow(ws, 1, cols + 1, `${e.settings.university_name} — ${e.settings.college_name}`)
@@ -295,17 +294,17 @@ export async function exportMasterXlsx(e: MasterExport) {
     row.results.forEach((x, j) => {
       const c = first + j * per
       if (e.compact) {
-        bodyCell(ws.getCell(r, c), x.finalSpecial ? SPECIAL_LABEL[x.finalSpecial] : x.finalTotal, { red: x.finalTotal != null && x.finalTotal < pass, zebra })
+        bodyCell(ws.getCell(r, c), x.finalSpecial ? SPECIAL_LABEL[x.finalSpecial] : x.finalTotal, { red: x.finalTotal != null && x.finalPassed === false, zebra })
         return
       }
       bodyCell(ws.getCell(r, c), x.coursework, { zebra })
       bodyCell(ws.getCell(r, c + 1), x.special ? SPECIAL_LABEL[x.special] : x.finalSum, { zebra })
-      bodyCell(ws.getCell(r, c + 2), x.total, { bold: true, red: x.total != null && x.total < pass, zebra })
+      bodyCell(ws.getCell(r, c + 2), x.total, { bold: true, red: x.total != null && x.passed === false, zebra })
       if (hasR2) {
         const show = x.complete && x.needsR2
         bodyCell(ws.getCell(r + 1, c), show ? 'د2' : '', { zebra: true })
         bodyCell(ws.getCell(r + 1, c + 1), show ? (x.r2Special ? SPECIAL_LABEL[x.r2Special] : x.r2FinalSum) : null, { zebra: true })
-        bodyCell(ws.getCell(r + 1, c + 2), show ? x.r2Total : null, { bold: true, red: show && x.r2Total != null && x.r2Total < pass, zebra: true })
+        bodyCell(ws.getCell(r + 1, c + 2), show ? x.r2Total : null, { bold: true, red: show && x.r2Total != null && x.finalPassed === false, zebra: true })
       }
     })
     const st = row.student

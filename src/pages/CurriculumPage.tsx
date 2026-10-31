@@ -5,7 +5,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useCurriculum } from '../app/queries'
 import { useSession } from '../app/session'
 import { useConfirm, useToast } from '../components/feedback'
-import { Button, Callout, Card, EmptyState, Field, IconButton, Input, LoadingBlock, Modal, PageHeader, Segmented, Textarea } from '../components/ui'
+import { Button, Callout, Card, Checkbox, EmptyState, Field, IconButton, Input, LoadingBlock, Modal, PageHeader, Segmented, Textarea } from '../components/ui'
 import { backend } from '../data'
 import { stageLabel, TERM_LABEL } from '../lib/labels'
 import { schemeForPlan } from '../lib/calc'
@@ -44,7 +44,18 @@ export function CurriculumPage() {
     theory_hours: 2,
     practical_hours: 0,
     units: 2,
+    ministerial: false,
   })
+
+  // تعليم المادة كتقويمية (وزارية) مباشرة من الجدول
+  const toggleMinisterial = async (c: CurriculumItem, v: boolean) => {
+    try {
+      await backend.saveCurriculum({ ...c, ministerial: v })
+      void refresh()
+    } catch (e) {
+      toast.error(e)
+    }
+  }
 
   const remove = async (c: CurriculumItem) => {
     if (!(await confirm({ title: 'حذف من الخطة الدراسية', message: <>حذف مادة «{c.name}» من الخطة؟ لا يؤثر ذلك على المواد المضافة سابقاً للسنوات الدراسية.</>, danger: true, confirmText: 'حذف' }))) return
@@ -115,6 +126,9 @@ export function CurriculumPage() {
                   <th className="text-center">ع</th>
                   <th className="text-center">المجموع</th>
                   <th className="text-center">الوحدات</th>
+                  <th className="text-center" title="المادة التقويمية: سعي 40 + امتحان نهائي وزاري 60 ويُشترط 30 من 60 في الامتحان النهائي">
+                    تقويمية (وزارية)
+                  </th>
                   <th>توزيع الدرجة عند الاستيراد</th>
                   {manage && <th className="w-24" />}
                 </tr>
@@ -133,6 +147,21 @@ export function CurriculumPage() {
                     <td className="text-center tabular-nums">{c.practical_hours || '—'}</td>
                     <td className="text-center tabular-nums">{c.theory_hours + c.practical_hours}</td>
                     <td className="text-center font-semibold tabular-nums">{c.units}</td>
+                    <td className="text-center">
+                      {manage ? (
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-[var(--primary)]"
+                          aria-label={`مادة تقويمية — ${c.name}`}
+                          checked={c.ministerial}
+                          onChange={(e) => void toggleMinisterial(c, e.target.checked)}
+                        />
+                      ) : c.ministerial ? (
+                        'نعم'
+                      ) : (
+                        ''
+                      )}
+                    </td>
                     <td className="text-xs text-muted">{schemeForPlan(c).label}</td>
                     {manage && (
                       <td>
@@ -158,7 +187,7 @@ export function CurriculumPage() {
                   <td className="text-center tabular-nums">{totals.pr}</td>
                   <td className="text-center tabular-nums">{totals.th + totals.pr}</td>
                   <td className="text-center tabular-nums">{totals.u}</td>
-                  <td colSpan={manage ? 2 : 1} />
+                  <td colSpan={manage ? 3 : 2} />
                 </tr>
               </tfoot>
             </table>
@@ -240,6 +269,7 @@ function PlanItemDialog({ item, onClose, onSaved }: { item: CurriculumInput | nu
               <Input type="number" min={0} step={0.5} dir="ltr" className="text-center" value={f.units} onChange={(e) => set('units', n(e.target.value))} />
             </Field>
           </div>
+          <Checkbox checked={f.ministerial} onChange={(v) => set('ministerial', v)} label="مادة تقويمية (وزارية) — الامتحان النهائي وزاري" />
           <p className="text-xs text-muted">عند الاستيراد: {schemeForPlan(f).label}</p>
           <button type="submit" hidden />
         </form>

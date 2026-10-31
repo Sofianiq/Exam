@@ -238,10 +238,7 @@ function MasterTable({
   print?: boolean
   onNote?: (r: StudentResultRow) => void
 }) {
-  const s = useSession()
-  const pass = s.settings.pass_mark
   const per = compact ? 1 : 3
-  const isFail = (v: number | null | undefined) => v != null && v < pass
   const finalText = (r: RowResult) => (r.special ? SPECIAL_LABEL[r.special] : fmtNum(r.finalSum))
   const th = print ? '' : 'px-1.5 py-2 text-center text-[0.72rem] font-semibold text-muted'
   const td = print ? '' : 'px-1 text-center tabular-nums'
@@ -269,6 +266,7 @@ function MasterTable({
               <span className={cx('block font-normal', !print && 'text-faint')}>
                 {unitsLabel(x.units)}
                 {term === 0 ? ` — ف${x.term}` : ''}
+                {x.ministerial ? ' — وزارية' : ''}
               </span>
             </th>
           ))}
@@ -325,7 +323,7 @@ function MasterTable({
                 </td>
                 {row.results.map((r, j) =>
                   compact ? (
-                    <td key={j} className={cx(td, isFail(r.finalTotal) && 'font-bold text-danger print-fail', r.finalSpecial && 'text-xs text-warning')}>
+                    <td key={j} className={cx(td, r.finalPassed === false && r.finalTotal != null && 'font-bold text-danger print-fail', r.finalSpecial && 'text-xs text-warning')}>
                       {r.finalSpecial ? SPECIAL_LABEL[r.finalSpecial] : fmtNum(r.finalTotal)}
                       {r.finalRound === 2 && <sup className="ms-0.5 text-gold-text">د2</sup>}
                     </td>
@@ -333,7 +331,7 @@ function MasterTable({
                     <Fragment key={j}>
                       <td className={cx(td, !print && 'text-muted')}>{fmtNum(r.coursework)}</td>
                       <td className={cx(td, r.special && 'text-xs text-warning')}>{finalText(r)}</td>
-                      <td className={cx(td, 'font-semibold', isFail(r.total) && 'text-danger print-fail')}>{fmtNum(r.total)}</td>
+                      <td className={cx(td, 'font-semibold', r.passed === false && r.total != null && 'text-danger print-fail')}>{fmtNum(r.total)}</td>
                     </Fragment>
                   ),
                 )}
@@ -371,7 +369,7 @@ function MasterTable({
                         <td className={cx(td, !print && 'bg-gold-soft/40', r.r2Special && 'text-warning')}>
                           {show ? (r.r2Special ? SPECIAL_LABEL[r.r2Special] : fmtNum(r.r2FinalSum)) : ''}
                         </td>
-                        <td className={cx(td, !print && 'bg-gold-soft/40 font-semibold', show && isFail(r.r2Total) && 'text-danger print-fail', show && r.r2Total != null && !isFail(r.r2Total) && 'text-success')}>
+                        <td className={cx(td, !print && 'bg-gold-soft/40 font-semibold', show && r.r2Total != null && r.finalPassed === false && 'text-danger print-fail', show && r.r2Total != null && r.finalPassed === true && 'text-success')}>
                           {show ? fmtNum(r.r2Total) : ''}
                         </td>
                       </Fragment>

@@ -149,6 +149,32 @@ alter table public.subjects add column if not exists r2_submitted_at timestamptz
 alter table public.subjects add column if not exists r2_reviewed_at timestamptz;
 alter table public.subjects add column if not exists r2_reviewed_by uuid;
 
+-- ترقيات الإصدار الثالث: المواد التقويمية (الوزارية)، حجب الدرجات عن التدريسيين، الإعلانات
+alter table public.subjects add column if not exists ministerial boolean not null default false;
+alter table public.subjects add column if not exists final_min numeric(5,2);
+alter table public.curriculum add column if not exists ministerial boolean not null default false;
+alter table public.settings add column if not exists hide_grades_when_closed boolean not null default true;
+do $$ begin
+  alter table public.subjects add constraint subjects_final_min_check
+    check (final_min is null or (final_min >= 0 and final_min <= 100 - coursework_max));
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.announcements (
+  id             uuid primary key default gen_random_uuid(),
+  title          text not null check (length(trim(title)) > 0),
+  body           text not null default '',
+  level          text not null default 'info' check (level in ('info','important','urgent')),
+  department_id  uuid references public.departments (id) on delete cascade,
+  audience       text not null default 'all' check (audience in ('all','teachers','heads')),
+  pinned         boolean not null default false,
+  expires_at     timestamptz,
+  created_by     uuid default auth.uid(),
+  created_by_name text,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+create index if not exists announcements_created_idx on public.announcements (created_at desc);
+
 create table if not exists public.audit_log (
   id             bigint generated always as identity primary key,
   at             timestamptz not null default now(),
@@ -263,6 +289,33 @@ begin
   return null;
 end $$;
 
+-- حجب الدرجات عن التدريسي عند غلق الإدخال (عام أو للقسم) إن فُعّل ذلك في الإعدادات:
+-- تنتهي مهمة التدريسي بتسليم الدرجات، وما بعدها سري لا يطّلع عليه
+create or replace function public.grades_hidden_for_me(p_subject_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(public.my_role() = 'teacher', false)
+     and coalesce((select hide_grades_when_closed from public.settings where id = 1), true)
+     and exists (
+       select 1 from public.subjects s join public.departments d on d.id = s.department_id
+       where s.id = p_subject_id
+         and (not coalesce((select entry_open from public.settings where id = 1), true) or not d.entry_open)
+     )
+$$;
+
+-- من يقرأ الإعلان: الإدارة واللجنة كل الإعلانات، وغيرهم إعلانات الكلية العامة وإعلانات أقسامهم غير المنتهية
+create or replace function public.can_read_announcement(a public.announcements) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select public.can_view_all()
+      or a.created_by = auth.uid()
+      or ( (a.expires_at is null or a.expires_at > now())
+       and ( a.department_id is null
+          or a.department_id = public.my_department()
+          or exists (select 1 from public.subjects s where s.department_id = a.department_id and auth.uid() = any (s.teacher_ids)) )
+       and ( a.audience = 'all'
+          or (a.audience = 'teachers' and public.my_role() in ('teacher','head'))
+          or (a.audience = 'heads' and public.my_role() = 'head') ) )
+$$;
+
 -- ---------------------------------------------------------------------
 -- 3) حساب الدرجات
 -- ---------------------------------------------------------------------
@@ -286,6 +339,17 @@ language sql stable set search_path = '' as $$
       or (s.final_max > 0 and g.final_theory is null) then null
     else public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0)
                              + coalesce(g.final_practical,0) + coalesce(g.final_theory,0))
+  end
+$$;
+
+-- هل الطالب ناجح في الدور الأول؟ المجموع ≥ درجة النجاح، وفي المادة التقويمية (الوزارية)
+-- يُشترط أيضاً بلوغ الحد الأدنى في الامتحان النهائي (مثلاً 30 من 60). null = الدرجات غير مكتملة
+create or replace function public.grade_passed(s public.subjects, g public.grades) returns boolean
+language sql stable set search_path = '' as $$
+  select case
+    when public.grade_total(s, g) is null then null
+    else public.grade_total(s, g) >= (select pass_mark from public.settings where id = 1)
+     and (s.final_min is null or coalesce(g.final_practical,0) + coalesce(g.final_theory,0) >= s.final_min)
   end
 $$;
 
@@ -439,7 +503,7 @@ begin
     if new.special is null and v_total is null then
       raise exception 'درجات الدور الأول للطالب غير مكتملة' using errcode = '22023';
     end if;
-    if new.special is null and v_total >= (select pass_mark from public.settings where id = 1) then
+    if new.special is null and public.grade_passed(s, new) then
       raise exception 'الطالب ناجح في الدور الأول ولا يحتاج إلى دور ثانٍ' using errcode = '22023';
     end if;
   end if;
@@ -538,8 +602,8 @@ begin
     raise exception 'لا يمكن نقل مادة تحتوي على درجات إلى صف آخر' using errcode = '42501';
   end if;
 
-  if (new.coursework_max, new.cw_practical_max, new.practical_max)
-       is distinct from (old.coursework_max, old.cw_practical_max, old.practical_max) then
+  if (new.coursework_max, new.cw_practical_max, new.practical_max, new.final_min)
+       is distinct from (old.coursework_max, old.cw_practical_max, old.practical_max, old.final_min) then
     if old.status in ('submitted','approved') and not public.is_super() then
       raise exception 'لا يمكن تعديل توزيع الدرجات لقائمة مرسلة أو معتمدة' using errcode = '42501';
     end if;
@@ -650,6 +714,37 @@ drop trigger if exists settings_audit on public.settings;
 create trigger settings_audit before update on public.settings
   for each row execute function public.settings_audit();
 
+-- الإعلانات: تثبيت الكاتب واسمه، ومنع مقرر القسم من النشر خارج قسمه، وتسجيل العملية
+create or replace function public.announcements_guard() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if tg_op = 'DELETE' then
+    perform public.write_audit('announcement.delete', 'announcement', old.id::text, old.department_id, 'حذف إعلان: ' || old.title, null);
+    return old;
+  end if;
+  if not public.is_super() and not (public.my_role() = 'head' and new.department_id is not distinct from public.my_department() and new.department_id is not null) then
+    raise exception 'ليست لديك صلاحية نشر إعلان لهذه الجهة' using errcode = '42501';
+  end if;
+  if tg_op = 'INSERT' then
+    new.created_by := auth.uid();
+    new.created_by_name := (select coalesce(nullif(trim(coalesce(p.title, '') || ' ' || p.full_name), ''), p.full_name)
+                            from public.profiles p where p.id = auth.uid());
+    new.created_at := now();
+    perform public.write_audit('announcement.create', 'announcement', new.id::text, new.department_id, 'نشر إعلان: ' || new.title, null);
+  else
+    new.created_by := old.created_by;
+    new.created_by_name := old.created_by_name;
+    new.created_at := old.created_at;
+    perform public.write_audit('announcement.update', 'announcement', new.id::text, new.department_id, 'تعديل إعلان: ' || new.title, null);
+  end if;
+  new.updated_at := now();
+  return new;
+end $$;
+
+drop trigger if exists announcements_guard on public.announcements;
+create trigger announcements_guard before insert or update or delete on public.announcements
+  for each row execute function public.announcements_guard();
+
 create or replace function public.departments_audit() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -679,7 +774,13 @@ create trigger departments_audit after insert or update or delete on public.depa
 create or replace function public.save_grades(p_subject_id uuid, p_rows jsonb, p_reason text default null)
 returns timestamptz
 language plpgsql security invoker set search_path = '' as $$
+declare v_block text;
 begin
+  -- رسالة واضحة بدل خطأ الصلاحيات العام عندما تكون الدرجات محجوبة عن التدريسي (الإدخال مغلق)
+  if public.grades_hidden_for_me(p_subject_id) then
+    v_block := public.grade_edit_block_reason(p_subject_id);
+    raise exception '%', coalesce(v_block, 'إدخال الدرجات مغلق حالياً') using errcode = '42501';
+  end if;
   if p_reason is not null and length(trim(p_reason)) > 0 then
     perform set_config('app.change_reason', trim(p_reason), true);
   end if;
@@ -866,10 +967,10 @@ begin
     raise exception 'ليست لديك صلاحية على القسم الهدف' using errcode = '42501';
   end if;
   insert into public.subjects (year_id, department_id, stage, shift, term, name, code, units, teacher_ids,
-                               coursework_max, cw_practical_max, practical_max, sort)
+                               coursework_max, cw_practical_max, practical_max, sort, ministerial, final_min)
   select p_to_year, p_to_dept, p_to_stage, p_to_shift, p_to_term, s.name, s.code, s.units,
          case when p_with_teachers then s.teacher_ids else '{}'::uuid[] end,
-         s.coursework_max, s.cw_practical_max, s.practical_max, s.sort
+         s.coursework_max, s.cw_practical_max, s.practical_max, s.sort, s.ministerial, s.final_min
   from public.subjects s
   where s.year_id = p_from_year and s.department_id = p_from_dept and s.stage = p_from_stage
     and s.shift = p_from_shift and s.term = p_from_term
@@ -1106,14 +1207,12 @@ from public.subjects s
 left join lateral (
   select count(*) as n_students,
          count(*) filter (where g.special is not null or public.grade_total(s, g) is not null) as n_complete,
-         count(*) filter (where public.grade_total(s, g) >= (select pass_mark from public.settings where id = 1)) as n_pass,
-         count(*) filter (where public.grade_total(s, g) < (select pass_mark from public.settings where id = 1)) as n_fail,
+         count(*) filter (where public.grade_passed(s, g)) as n_pass,
+         count(*) filter (where not public.grade_passed(s, g)) as n_fail,
          count(*) filter (where g.special is not null) as n_special,
          round(avg(public.grade_total(s, g)), 2) as avg_total,
-         count(*) filter (where g.special is not null
-                           or public.grade_total(s, g) < (select pass_mark from public.settings where id = 1)) as n_r2_needed,
-         count(*) filter (where (g.special is not null
-                                 or public.grade_total(s, g) < (select pass_mark from public.settings where id = 1))
+         count(*) filter (where g.special is not null or not public.grade_passed(s, g)) as n_r2_needed,
+         count(*) filter (where (g.special is not null or not public.grade_passed(s, g))
                             and (g.r2_special is not null or public.grade_r2_total(s, g) is not null)) as n_r2_done
   from public.students st
   left join public.grades g on g.subject_id = s.id and g.student_id = st.id
@@ -1134,6 +1233,7 @@ alter table public.subjects       enable row level security;
 alter table public.grades         enable row level security;
 alter table public.audit_log      enable row level security;
 alter table public.curriculum     enable row level security;
+alter table public.announcements  enable row level security;
 
 drop policy if exists departments_read on public.departments;
 create policy departments_read on public.departments for select to authenticated using (true);
@@ -1190,7 +1290,8 @@ create policy subjects_delete on public.subjects for delete to authenticated
 
 drop policy if exists grades_read on public.grades;
 create policy grades_read on public.grades for select to authenticated
-  using (exists (select 1 from public.subjects s where s.id = subject_id));
+  using (exists (select 1 from public.subjects s where s.id = subject_id)
+         and not public.grades_hidden_for_me(subject_id));
 drop policy if exists grades_insert on public.grades;
 create policy grades_insert on public.grades for insert to authenticated
   with check (public.can_write_subject(subject_id));
@@ -1200,6 +1301,20 @@ create policy grades_update on public.grades for update to authenticated
 drop policy if exists grades_delete on public.grades;
 create policy grades_delete on public.grades for delete to authenticated
   using (public.can_write_subject(subject_id));
+
+drop policy if exists announcements_read on public.announcements;
+create policy announcements_read on public.announcements for select to authenticated
+  using (public.can_read_announcement(announcements));
+drop policy if exists announcements_insert on public.announcements;
+create policy announcements_insert on public.announcements for insert to authenticated
+  with check (public.is_super() or (public.my_role() = 'head' and department_id = public.my_department()));
+drop policy if exists announcements_update on public.announcements;
+create policy announcements_update on public.announcements for update to authenticated
+  using (public.is_super() or (public.my_role() = 'head' and created_by = auth.uid()))
+  with check (public.is_super() or (public.my_role() = 'head' and department_id = public.my_department()));
+drop policy if exists announcements_delete on public.announcements;
+create policy announcements_delete on public.announcements for delete to authenticated
+  using (public.is_super() or (public.my_role() = 'head' and created_by = auth.uid()));
 
 drop policy if exists curriculum_read on public.curriculum;
 create policy curriculum_read on public.curriculum for select to authenticated using (true);
@@ -1219,7 +1334,7 @@ create policy audit_read on public.audit_log for select to authenticated using (
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.departments, public.academic_years, public.students,
-  public.subjects, public.grades, public.curriculum to authenticated;
+  public.subjects, public.grades, public.curriculum, public.announcements to authenticated;
 grant select, update on public.settings to authenticated;
 grant select on public.profiles, public.audit_log, public.subject_progress to authenticated;
 revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
@@ -1234,6 +1349,8 @@ grant execute on function
   public.can_write_subject(uuid), public.grade_edit_block_reason(uuid), public.grade_r2_block_reason(uuid),
   public.apply_rounding(numeric), public.grade_total(public.subjects, public.grades),
   public.grade_r2_total(public.subjects, public.grades),
+  public.grade_passed(public.subjects, public.grades),
+  public.grades_hidden_for_me(uuid), public.can_read_announcement(public.announcements),
   public.log_client_event(text, text, jsonb),
   public.save_grades(uuid, jsonb, text),
   public.add_students(uuid, uuid, smallint, text, text[]),
@@ -1264,45 +1381,258 @@ on conflict (name) do nothing;
 insert into public.academic_years (label) values ('2025-2026'), ('2026-2027')
 on conflict (label) do nothing;
 
--- الخطة الدراسية لقسم تقنيات صحة المجتمع (المرحلتان الأولى والثانية — المفردات الدراسية 2025-2026)
+-- <plans> (مولَّد تلقائياً من scripts/plans_data.py — لا تعدّله يدوياً)
+-- الخطط الدراسية الرسمية 2025-2026: التخدير، الأشعة والسونار، صناعة الأسنان، صحة المجتمع (المراحل الأربع)
 insert into public.curriculum (department_id, stage, term, sort, name, name_en, category, language, theory_hours, practical_hours, units)
 select d.id, v.stage, v.term, v.sort, v.name, v.name_en, v.category, v.language, v.th, v.pr, v.units
 from public.departments d
 cross join (values
-  (1, 1, 1, 'تقنيات الأجهزة الطبية',           'Techniques for Medical Device',      'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 1, 2, 'علم الاحياء المجهرية الطبية 1',   'Medical Microbiology 1',             'تخصصية / مساعدة', 'English', 2, 4, 4),
-  (1, 1, 3, 'مبادئ صحة المجتمع 1',             'Principles of Community Health 1',   'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 1, 4, 'الكيمياء السريرية 1',             'Clinical Chemistry 1',               'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 1, 5, 'التشريح العام 1',                 'General Anatomy 1',                  'تخصصية / مساعدة', 'English', 2, 4, 4),
-  (1, 1, 6, 'علم وظائف الاعضاء 1',             'Physiology 1',                       'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 1, 7, 'مصطلحات طبية',                    'Medical Terminology (1)',            'عامة',            'English', 1, 0, 1),
-  (1, 1, 8, 'حقوق الانسان والديمقراطية',       'Human Rights and Democracy',         'عامة',            'العربية', 2, 0, 2),
-  (1, 1, 9, 'اللغة العربية',                   'Arabic Language (1)',                'عامة',            'العربية', 1, 0, 1),
-  (1, 2, 1, 'علم الاحياء المجهرية الطبية 2',   'Medical Microbiology 2',             'تخصصية / مساعدة', 'English', 2, 4, 4),
-  (1, 2, 2, 'مبادئ صحة المجتمع 2',             'Principles of Community Health 2',   'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 2, 3, 'الكيمياء السريرية 2',             'Clinical Chemistry 2',               'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 2, 4, 'التشريح العام 2',                 'General Anatomy 2',                  'تخصصية / مساعدة', 'English', 2, 4, 4),
-  (1, 2, 5, 'علم وظائف الاعضاء 2',             'Physiology 2',                       'تخصصية / اساسية', 'English', 2, 4, 4),
-  (1, 2, 6, 'اللغة العربية',                   'Arabic Language',                    'عامة',            'العربية', 1, 0, 1),
-  (1, 2, 7, 'مبادئ الحاسوب',                   'Computer Fundamentals',              'عامة',            'العربية', 1, 2, 2),
-  (2, 1, 1, 'علم التغذية 1',                   'Nutrition 1',                        'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 1, 2, 'امراض انتقالية 1',                'Communicable Diseases 1',            'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 1, 3, 'علم الدوائيات 1',                 'Pharmacology 1',                     'تخصصية / مساعدة', 'English', 2, 2, 3),
-  (2, 1, 4, 'علم الوبائيات 1',                 'Epidemiology 1',                     'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 1, 5, 'صحة بيئة 1',                      'Environmental Health 1',             'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 1, 6, 'تطبيقات الحاسوب',                 'Computer Applications',              'عامة',            'العربية', 1, 2, 2),
-  (2, 1, 7, 'جرائم نظام البعث في العراق',      'Crimes of the Baath Regime in Iraq', 'عامة',            'العربية', 2, 0, 2),
-  (2, 1, 8, 'اللغة العربية 1',                 'Arabic Language (1)',                'عامة',            'العربية', 1, 0, 1),
-  (2, 2, 1, 'علم التغذية 2',                   'Nutrition 2',                        'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 2, 2, 'امراض انتقالية 2',                'Communicable Diseases 2',            'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 2, 3, 'علم الدوائيات 2',                 'Pharmacology 2',                     'تخصصية / مساعدة', 'English', 2, 2, 3),
-  (2, 2, 4, 'علم الوبائيات 2',                 'Epidemiology 2',                     'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 2, 5, 'إحصاء طبي حياتي',                 'Biostatistics',                      'تخصصية / اساسية', 'English', 2, 2, 3),
-  (2, 2, 6, 'صحة بيئة 2',                      'Environmental Health 2',             'تخصصية / اساسية', 'English', 2, 4, 4),
-  (2, 2, 7, 'اللغة العربية',                   'Arabic Language',                    'عامة',            'العربية', 1, 0, 1)
+  (1, 1, 1, 'الفيزياء الطبية 1', 'Medical Physics (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 2, 'التشريح 1', 'Anatomy (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 3, 'الفسلجة العامة 1', 'General Physiology (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 4, 'الكيمياء العامة', 'General Chemistry', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 5, 'البايولوجي', 'Biology', 'مساعدة', 'English', 2, 4, 4),
+  (1, 1, 6, 'مبادئ الحاسوب', 'Computer Fundamentals', 'عامة', 'English', 1, 2, 2),
+  (1, 1, 7, 'حقوق الانسان والديمقراطية', 'Human Rights and Democracy', 'عامة', 'العربية', 2, 0, 2),
+  (1, 1, 8, 'المصطلحات الطبية 1', 'Medical Terminology (1)', 'عامة', 'English', 1, 0, 1),
+  (1, 1, 9, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 1, 'الفيزياء الطبية 2', 'Medical Physics (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 2, 'التشريح 2', 'Anatomy (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 3, 'الفسلجة العامة 2', 'General Physiology (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 4, 'الكيمياء الحيوية', 'Biochemistry', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 5, 'المايكروبايولوجي', 'Microbiology', 'مساعدة', 'English', 2, 4, 4),
+  (1, 2, 6, 'المصطلحات الطبية 2', 'Medical Terminology (2)', 'عامة', 'English', 1, 0, 1),
+  (1, 2, 7, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 1, 1, 'اسس التخدير 1', 'Basics of Anesthesia (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 2, 'اسس اجهزة التخدير 1', 'Basics of Anesthetic Equipment (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 3, 'الفسلجة التطبيقية 1', 'Applied Physiology (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 4, 'اسس الجراحة 1', 'Basics of Surgery (1)', 'تخصصية / اساسية', 'English', 1, 4, 3),
+  (2, 1, 5, 'اسس الطب الباطني 1', 'Basics of Medicine (1)', 'مساعدة', 'English', 2, 4, 4),
+  (2, 1, 6, 'الدوائيات 1', 'Pharmacology (1)', 'مساعدة', 'English', 2, 2, 3),
+  (2, 1, 7, 'المصطلحات الطبية', 'Medical Terminology', 'عامة', 'English', 2, 0, 2),
+  (2, 1, 8, 'تطبيقات الحاسوب', 'Computer Applications', 'عامة', 'English', 1, 2, 2),
+  (2, 1, 9, 'جرائم نظام البعث في العراق', 'Crimes of the Baath Regime in Iraq', 'مساعدة', 'العربية', 2, 0, 2),
+  (2, 1, 10, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 2, 1, 'اسس التخدير 2', 'Basics of Anesthesia (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 2, 'اسس اجهزة التخدير 2', 'Basics of Anesthetic Equipment (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 3, 'الفسلجة التطبيقية 2', 'Applied Physiology (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 4, 'اسس الجراحة 2', 'Basics of Surgery (2)', 'تخصصية / اساسية', 'English', 1, 4, 3),
+  (2, 2, 5, 'اسس الطب الباطني 2', 'Basics of Medicine (2)', 'مساعدة', 'English', 2, 4, 4),
+  (2, 2, 6, 'الدوائيات 2', 'Pharmacology (2)', 'مساعدة', 'English', 2, 2, 3),
+  (2, 2, 7, 'الاحصاء', 'Statistics', 'مساعدة', 'English', 1, 2, 2),
+  (2, 2, 8, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (3, 1, 1, 'التخدير 1', 'Anesthesia (1)', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (3, 1, 2, 'اسس العناية المركزة 1', 'Basics of Intensive Care (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 1, 3, 'تقنيات أجهزة التخدير 1', 'Anaesthetic Equipment Technology (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 1, 4, 'الطب الباطني 1', 'Medicine (1)', 'مساعدة', 'English', 2, 4, 4),
+  (3, 1, 5, 'الجراحة 1', 'Surgery (1)', 'تخصصية / اساسية', 'English', 1, 3, 2),
+  (3, 2, 1, 'التخدير 2', 'Anesthesia (2)', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (3, 2, 2, 'اسس العناية المركزة 2', 'Basics of Intensive Care (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 2, 3, 'تقنيات أجهزة التخدير 2', 'Anaesthetic Equipment Technology (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 2, 4, 'الطب الباطني 2', 'Medicine (2)', 'مساعدة', 'English', 2, 4, 4),
+  (3, 2, 5, 'الجراحة 2', 'Surgery (2)', 'تخصصية / اساسية', 'English', 1, 3, 2),
+  (4, 1, 1, 'تخدير متقدم 1', 'Advanced Anesthesia (1)', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (4, 1, 2, 'تقنية اجهزة التخدير المتقدم 1', 'Advanced Anaesthetic Equipment Technology (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 1, 3, 'تقنيات العناية المركزة 1', 'Intensive Care Technology (1)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 1, 4, 'الطب الباطني المتقدم 1', 'Advanced Medicine (1)', 'تخصصية / اساسية', 'English', 2, 3, 3),
+  (4, 1, 5, 'طب الالم', 'Pain Medicine', 'مساعدة', 'English', 2, 3, 3),
+  (4, 1, 6, 'اخلاقيات المهنة', 'Professional Ethics', 'مساعدة', 'العربية', 2, 0, 2),
+  (4, 2, 1, 'تخدير متقدم 2', 'Advanced Anesthesia (2)', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (4, 2, 2, 'تقنية اجهزة التخدير المتقدم 2', 'Advanced Anaesthetic Equipment Technology (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 3, 'تقنيات العناية المركزة 2', 'Intensive Care Technology (2)', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 4, 'الطب الباطني المتقدم 2', 'Advanced Medicine (2)', 'تخصصية / اساسية', 'English', 2, 3, 3),
+  (4, 2, 5, 'طب الطوارئ', 'Emergency Medicine', 'مساعدة', 'English', 2, 3, 3),
+  (4, 2, 6, 'مشروع التخرج', 'Graduation Project', 'مساعدة', 'English', 0, 6, 4)
+) as v(stage, term, sort, name, name_en, category, language, th, pr, units)
+where d.code = 'ANS'
+on conflict (department_id, stage, term, name) do nothing;
+
+insert into public.curriculum (department_id, stage, term, sort, name, name_en, category, language, theory_hours, practical_hours, units)
+select d.id, v.stage, v.term, v.sort, v.name, v.name_en, v.category, v.language, v.th, v.pr, v.units
+from public.departments d
+cross join (values
+  (1, 1, 1, 'تشريح الهيكل العظمي', 'Anatomy of Skeleton', 'تخصصية', 'English', 2, 3, 3),
+  (1, 1, 2, 'الفيزياء العامة', 'General Physics', 'مساعدة', 'English', 2, 3, 3),
+  (1, 1, 3, 'علم الفسلجة العام', 'General Physiology', 'مساعدة', 'English', 2, 3, 3),
+  (1, 1, 4, 'البايولوجي', 'Biology', 'مساعدة', 'English', 2, 3, 3),
+  (1, 1, 5, 'الكيمياء العامة', 'General Chemistry', 'مساعدة', 'English', 2, 3, 3),
+  (1, 1, 6, 'مبادئ الحاسوب', 'Computer Fundamentals', 'عامة', 'English', 1, 2, 2),
+  (1, 1, 7, 'حقوق الانسان والديمقراطية', 'Human Rights and Democracy', 'عامة', 'العربية', 2, 0, 2),
+  (1, 1, 8, 'المصطلحات الطبية 1', 'Medical Terminology (1)', 'عامة', 'English', 1, 0, 1),
+  (1, 1, 9, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 1, 'تشريح اجهزة الجسم', 'Anatomy of Body Systems', 'تخصصية', 'English', 2, 3, 3),
+  (1, 2, 2, 'فيزياء الذرة', 'Physics of Atom', 'مساعدة', 'English', 2, 3, 3),
+  (1, 2, 3, 'علم الفسلجة الوظيفي', 'Systemic Physiology', 'مساعدة', 'English', 2, 3, 3),
+  (1, 2, 4, 'البايولوجي الاشعاعي', 'Radiobiology', 'مساعدة', 'English', 2, 4, 4),
+  (1, 2, 5, 'اسس التمريض', 'Principles of Nursing', 'مساعدة', 'English', 2, 4, 4),
+  (1, 2, 6, 'المصطلحات الطبية 2', 'Medical Terminology (2)', 'عامة', 'English', 1, 0, 1),
+  (1, 2, 7, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 1, 1, 'تقنيات الاجهزة الشعاعية التقليدية', 'Conventional Radiological Equipment Techniques', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 2, 'تقنيات التصوير الشعاعي للاطراف العليا', 'Radiographic Techniques for Upper Limbs', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 3, 'فحوصات شعاعية خاصة للجهاز الهضمي والعظام', 'Special Radiological Procedures of GIT and Bones', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 4, 'التشريح الشعاعي للرأس والاطراف العليا', 'Radiological Anatomy of Head and Upper Limbs', 'تخصصية', 'English', 2, 4, 4),
+  (2, 1, 5, 'اساسيات الفيزياء الشعاعية', 'Fundamentals of Radio-physics', 'مساعدة', 'English', 2, 3, 3),
+  (2, 1, 6, 'اساسيات الوقاية من الاشعاع', 'Fundamentals of Radiation Protection', 'مساعدة', 'English', 2, 3, 3),
+  (2, 1, 7, 'تطبيقات الحاسوب', 'Computer Applications', 'عامة', 'English', 1, 2, 2),
+  (2, 1, 8, 'جرائم نظام البعث في العراق', 'Crimes of the Baath Regime in Iraq', 'عامة', 'العربية', 2, 0, 2),
+  (2, 1, 9, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 2, 1, 'تقنيات أجهزة التصوير المقطعي المحوسب', 'Computed Tomography Equipment Techniques', 'تخصصية', 'English', 2, 5, 4),
+  (2, 2, 2, 'تقنيات التصوير الشعاعي للاطراف السفلى', 'Radiographic Techniques for Lower Limbs', 'تخصصية', 'English', 2, 5, 4),
+  (2, 2, 3, 'فحوصات شعاعية خاصة للجهاز الصفراوي والتناسلي', 'Special Radiological Procedures of Biliary and Reproductive System', 'تخصصية', 'English', 2, 5, 4),
+  (2, 2, 4, 'التشريح الشعاعي للاطراف السفلى', 'Radiological Anatomy of Lower Limbs', 'تخصصية', 'English', 2, 4, 4),
+  (2, 2, 5, 'فيزياء التصوير المقطعي المحوسب', 'Physics of Computed Tomography', 'مساعدة', 'English', 2, 3, 3),
+  (2, 2, 6, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (3, 1, 1, 'تقنيات أجهزة الرنين المغناطيسي', 'MRI Equipment Techniques', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 2, 'تقنيات التصوير الشعاعي للرأس والعمود الفقري', 'Radiographic Techniques for Head and Spinal Cord', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 3, 'فحوصات شعاعية خاصة للرأس والثدي والجهاز التنفسي', 'Special Radiological Procedures of Head, Breast and Respiratory System', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 4, 'التشريح الشعاعي للدماغ والعمود الفقري', 'Radiological Anatomy of Brain and Spinal Column', 'تخصصية', 'English', 2, 2, 3),
+  (3, 1, 5, 'علم الأمراض العام', 'General Pathology', 'مساعدة', 'English', 2, 2, 3),
+  (3, 1, 6, 'فيزياء الرنين المغناطيسي', 'Physics of Magnetic Resonance', 'مساعدة', 'English', 1, 3, 2),
+  (3, 1, 7, 'مخاطر الإشعاع البايولوجية', 'Biological Radiation Hazards', 'مساعدة', 'English', 2, 3, 3),
+  (3, 2, 1, 'تقنيات أجهزة السونار', 'Ultrasound Equipment Techniques', 'تخصصية', 'English', 2, 4, 4),
+  (3, 2, 2, 'تقنيات التصوير الشعاعي للصدر والبطن', 'Radiographic Techniques of Thorax and Abdomen', 'تخصصية', 'English', 2, 4, 4),
+  (3, 2, 3, 'فحوصات شعاعية خاصة لجهاز القلب والأوعية الدموية والجهاز العصبي', 'Special Radiological Procedures of Cardiovascular and Central Nervous System', 'تخصصية', 'English', 2, 4, 4),
+  (3, 2, 4, 'التشريح الشعاعي للصدر والبطن', 'Radiological Anatomy of Thorax and Abdomen', 'تخصصية', 'English', 2, 2, 3),
+  (3, 2, 5, 'علم الأمراض الوظيفي', 'Systemic Pathology', 'مساعدة', 'English', 2, 2, 3),
+  (3, 2, 6, 'فيزياء الامواج فوق الصوتية', 'Physics of Ultrasound', 'مساعدة', 'English', 1, 3, 2),
+  (4, 1, 1, 'التصوير المقطعي المحوسب للرأس والعمود الفقري', 'CT Imaging of Head and Spinal Cord', 'تخصصية', 'English', 2, 5, 4),
+  (4, 1, 2, 'مبادئ التصوير بالرنين المغناطيسي وفحوصات الرأس', 'MRI Principles and Head Exam', 'تخصصية', 'English', 2, 5, 4),
+  (4, 1, 3, 'التصوير بالموجات فوق الصوتية للبطن', 'Abdominal Ultrasound Imaging', 'تخصصية', 'English', 2, 5, 4),
+  (4, 1, 4, 'طب الامراض الباطنية', 'Medicine of Internal Diseases', 'مساعدة', 'English', 2, 3, 3),
+  (4, 1, 5, 'الاحصاء الحيوي وتطبيقات الحاسوب', 'Biostatistics and Computer Applications', 'مساعدة', 'English', 2, 4, 4),
+  (4, 2, 1, 'التصوير المقطعي المحوسب للصدر والبطن والحوض', 'CT Imaging of Chest, Abdomen and Pelvis', 'تخصصية', 'English', 2, 5, 4),
+  (4, 2, 2, 'التصوير بالرنين المغناطيسي للجهاز العضلي والعظمي والبطن والحوض', 'MRI of Musculoskeletal System, Abdomen and Pelvis', 'تخصصية', 'English', 2, 5, 4),
+  (4, 2, 3, 'التصوير بالموجات فوق الصوتية للأمراض النسائية والتوليد', 'Obstetric and Gynecologic Ultrasound Imaging', 'تخصصية', 'English', 2, 5, 4),
+  (4, 2, 4, 'طب الامراض الجراحية', 'Medicine of Surgical Diseases', 'مساعدة', 'English', 2, 3, 3),
+  (4, 2, 5, 'اخلاقيات المهنة', 'Professional Ethics', 'عامة', 'العربية', 2, 0, 2),
+  (4, 2, 6, 'مشروع التخرج', 'Graduation Project', 'تخصصية', 'English', 0, 6, 4)
+) as v(stage, term, sort, name, name_en, category, language, th, pr, units)
+where d.code = 'RAD'
+on conflict (department_id, stage, term, name) do nothing;
+
+insert into public.curriculum (department_id, stage, term, sort, name, name_en, category, language, theory_hours, practical_hours, units)
+select d.id, v.stage, v.term, v.sort, v.name, v.name_en, v.category, v.language, v.th, v.pr, v.units
+from public.departments d
+cross join (values
+  (1, 1, 1, 'المادة السنية (أساسي)', 'Dental Materials (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 1, 2, 'تقنيات أجهزة الأسنان (أساسي)', 'Dental Equipment Technologies (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 1, 3, 'تشريح الأسنان (أساسي)', 'Dental Anatomy (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 1, 4, 'السلامة المهنية', 'Occupational Safety', 'تخصصية', 'English', 2, 0, 2),
+  (1, 1, 5, 'المصطلحات الطبية 1', 'Medical Terms (1)', 'عامة', 'English', 1, 0, 1),
+  (1, 1, 6, 'حقوق الانسان والديمقراطية', 'Human Rights and Democracy', 'عامة', 'العربية', 2, 0, 2),
+  (1, 1, 7, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 1, 'المادة السنية (متوسط)', 'Dental Materials (Intermediate)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 2, 2, 'تقنيات أجهزة الأسنان (متقدم)', 'Dental Equipment Technologies (Advanced)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 2, 3, 'تشريح الأسنان (متقدم)', 'Dental Anatomy (Advanced)', 'تخصصية', 'English', 2, 5, 4),
+  (1, 2, 4, 'فيزياء عامة', 'General Physics', 'مساعدة', 'English', 2, 4, 4),
+  (1, 2, 5, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 6, 'مبادئ الحاسوب', 'Computer Fundamentals', 'عامة', 'العربية', 1, 2, 2),
+  (1, 2, 7, 'المصطلحات الطبية 2', 'Medical Terms (2)', 'عامة', 'English', 1, 0, 1),
+  (2, 1, 1, 'المادة السنية (متقدم)', 'Dental Materials (Advanced)', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 2, 'الطقم الكامل (أساسي)', 'Complete Denture (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 3, 'التيجان (أساسي)', 'Crowns (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (2, 1, 4, 'انسجة الفم', 'Oral Histology', 'مساعدة', 'English', 2, 3, 3),
+  (2, 1, 5, 'كيمياء (أساسي)', 'Chemistry (Basic)', 'مساعدة', 'English', 2, 4, 4),
+  (2, 1, 6, 'جرائم نظام البعث في العراق', 'Crimes of the Baath Regime in Iraq', 'عامة', 'العربية', 2, 0, 2),
+  (2, 1, 7, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 2, 1, 'الطقم الجزئي المتحرك (أساسي)', 'Removable Partial Denture (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (2, 2, 2, 'التيجان (متقدم)', 'Crowns (Advanced)', 'تخصصية', 'English', 2, 5, 4),
+  (2, 2, 3, 'فسلجة الفم', 'Oral Physiology', 'مساعدة', 'English', 2, 4, 4),
+  (2, 2, 4, 'تشريح الرأس والرقبة', 'Anatomy of Head and Neck', 'مساعدة', 'English', 2, 4, 4),
+  (2, 2, 5, 'كيمياء (متقدم)', 'Chemistry (Advanced)', 'مساعدة', 'English', 2, 4, 4),
+  (2, 2, 6, 'اللغة العربية 2', 'Arabic Language (2)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 2, 7, 'تطبيقات الحاسوب', 'Computer Applications', 'عامة', 'العربية', 1, 2, 2),
+  (3, 1, 1, 'الطقم الجزئي المتحرك (متوسط)', 'Removable Partial Denture (Intermediate)', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 2, 'الطقم الكامل (متوسط)', 'Complete Denture (Intermediate)', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 3, 'الجسور (أساسي)', 'Bridge (Basic)', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 4, 'تقويم الأسنان (أساسي)', 'Orthodontic (Basic)', 'تخصصية', 'English', 2, 4, 4),
+  (3, 1, 5, 'امراض الفم', 'Oral Pathology', 'مساعدة', 'English', 1, 2, 2),
+  (3, 2, 1, 'الجسور (متقدم)', 'Bridge (Advanced)', 'تخصصية', 'English', 2, 5, 4),
+  (3, 2, 2, 'تعويضات الوجه والفكين (أساسي)', 'Maxillofacial Prosthesis (Basic)', 'تخصصية', 'English', 2, 5, 4),
+  (3, 2, 3, 'تقويم الأسنان (متوسط)', 'Orthodontic (Intermediate)', 'تخصصية', 'English', 2, 5, 4),
+  (3, 2, 4, 'بكتيريا الفم', 'Oral Bacteriology', 'مساعدة', 'English', 2, 3, 3),
+  (3, 2, 5, 'طرائق البحث', 'Research Methods', 'عامة', 'English', 1, 0, 1),
+  (4, 1, 1, 'الطقم الجزئي المتحرك (متقدم 1)', 'Removable Partial Denture (Advanced 1)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 1, 2, 'الطقم الكامل (متقدم 1)', 'Complete Denture (Advanced 1)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 1, 3, 'التيجان والجسور (أساسي)', 'Crown and Bridge (Basic)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 1, 4, 'تقويم الأسنان (متقدم 1)', 'Orthodontic (Advanced 1)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 1, 5, 'تعويضات الوجه والفكين (متوسط)', 'Maxillofacial Prosthesis (Intermediate)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 1, 6, 'زراعة الأسنان', 'Dental Implant', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 1, 'الطقم الجزئي المتحرك (متقدم 2)', 'Removable Partial Denture (Advanced 2)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 2, 'الطقم الكامل (متقدم 2)', 'Complete Denture (Advanced 2)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 3, 'التيجان والجسور (متقدم)', 'Crown and Bridge (Advanced)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 4, 'تقويم الأسنان (متقدم 2)', 'Orthodontic (Advanced 2)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 5, 'تعويضات الوجه والفكين (متقدم)', 'Maxillofacial Prosthesis (Advanced)', 'تخصصية', 'English', 2, 4, 4),
+  (4, 2, 6, 'اخلاقيات المهنة', 'Professional Ethics', 'عامة', 'العربية', 2, 0, 2),
+  (4, 2, 7, 'مشروع التخرج', 'Graduation Project', 'تخصصية', 'English', 0, 6, 4)
+) as v(stage, term, sort, name, name_en, category, language, th, pr, units)
+where d.code = 'DEN'
+on conflict (department_id, stage, term, name) do nothing;
+
+insert into public.curriculum (department_id, stage, term, sort, name, name_en, category, language, theory_hours, practical_hours, units)
+select d.id, v.stage, v.term, v.sort, v.name, v.name_en, v.category, v.language, v.th, v.pr, v.units
+from public.departments d
+cross join (values
+  (1, 1, 1, 'تقنيات الأجهزة الطبية', 'Techniques for Medical Device', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 2, 'علم الاحياء المجهرية الطبية 1', 'Medical Microbiology 1', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 1, 3, 'مبادئ صحة المجتمع 1', 'Principles of Community Health 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 4, 'الكيمياء السريرية 1', 'Clinical Chemistry 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 5, 'التشريح العام 1', 'General Anatomy 1', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 1, 6, 'علم وظائف الاعضاء 1', 'Physiology 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 1, 7, 'مصطلحات طبية', 'Medical Terminology (1)', 'عامة', 'English', 1, 0, 1),
+  (1, 1, 8, 'حقوق الانسان والديمقراطية', 'Human Rights and Democracy', 'عامة', 'العربية', 2, 0, 2),
+  (1, 1, 9, 'اللغة العربية', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 1, 'علم الاحياء المجهرية الطبية 2', 'Medical Microbiology 2', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 2, 2, 'مبادئ صحة المجتمع 2', 'Principles of Community Health 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 3, 'الكيمياء السريرية 2', 'Clinical Chemistry 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 4, 'التشريح العام 2', 'General Anatomy 2', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (1, 2, 5, 'علم وظائف الاعضاء 2', 'Physiology 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (1, 2, 6, 'اللغة العربية', 'Arabic Language', 'عامة', 'العربية', 1, 0, 1),
+  (1, 2, 7, 'مبادئ الحاسوب', 'Computer Fundamentals', 'عامة', 'العربية', 1, 2, 2),
+  (1, 2, 8, 'مصطلحات طبية 2', 'Medical Terminology (2)', 'عامة', 'English', 1, 0, 1),
+  (2, 1, 1, 'علم التغذية 1', 'Nutrition 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 2, 'امراض انتقالية 1', 'Communicable Diseases 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 3, 'علم الدوائيات 1', 'Pharmacology 1', 'تخصصية / مساعدة', 'English', 2, 2, 3),
+  (2, 1, 4, 'علم الوبائيات 1', 'Epidemiology 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 5, 'صحة بيئة 1', 'Environmental Health 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 1, 6, 'تطبيقات الحاسوب', 'Computer Applications', 'عامة', 'العربية', 1, 2, 2),
+  (2, 1, 7, 'جرائم نظام البعث في العراق', 'Crimes of the Baath Regime in Iraq', 'عامة', 'العربية', 2, 0, 2),
+  (2, 1, 8, 'اللغة العربية 1', 'Arabic Language (1)', 'عامة', 'العربية', 1, 0, 1),
+  (2, 2, 1, 'علم التغذية 2', 'Nutrition 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 2, 'امراض انتقالية 2', 'Communicable Diseases 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 3, 'علم الدوائيات 2', 'Pharmacology 2', 'تخصصية / مساعدة', 'English', 2, 2, 3),
+  (2, 2, 4, 'علم الوبائيات 2', 'Epidemiology 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 5, 'إحصاء طبي حياتي', 'Biostatistics', 'تخصصية / اساسية', 'English', 2, 2, 3),
+  (2, 2, 6, 'صحة بيئة 2', 'Environmental Health 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (2, 2, 7, 'اللغة العربية', 'Arabic Language', 'عامة', 'العربية', 1, 0, 1),
+  (3, 1, 1, 'القوانين والرقابة الصحية', 'Health Laws and Supervision', 'تخصصية / اساسية', 'العربية', 2, 4, 4),
+  (3, 1, 2, 'التلوث البيئي', 'Environmental Pollution', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 1, 3, 'علم الحشرات الطبية', 'Medical Entomology', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (3, 1, 4, 'الاحصاء الحياتي المتقدم 1', 'Advanced Vital Statistics 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 1, 5, 'امراض مزمنة 1', 'Chronic Diseases 1', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (3, 2, 1, 'علم السموم', 'Toxicology', 'تخصصية / اساسية', 'English', 2, 2, 3),
+  (3, 2, 2, 'طرق بحث', 'Methodology', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 2, 3, 'مسح صحي', 'Health Survey', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 2, 4, 'الإدارة الصحية', 'Health Management', 'تخصصية / مساعدة', 'English', 2, 0, 2),
+  (3, 2, 5, 'الاحصاء الحياتي المتقدم 2', 'Advanced Vital Statistics 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (3, 2, 6, 'امراض مزمنة 2', 'Chronic Diseases 2', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (4, 1, 1, 'خدمات صحة المجتمع 1', 'Community Health Services 1', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (4, 1, 2, 'الصحة والسلامة المهنية 1', 'Occupational Health 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 1, 3, 'علم الوبائيات السريرية 1', 'Clinical Epidemiology 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 1, 4, 'التثقيف الصحي', 'Health Education', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (4, 1, 5, 'الامراض غير الانتقالية 1', 'Non Communicable Diseases 1', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 1, 6, 'الصحة الدولية', 'International Health', 'تخصصية / مساعدة', 'English', 2, 4, 4),
+  (4, 2, 1, 'خدمات صحة المجتمع 2', 'Community Health Services 2', 'تخصصية / اساسية', 'English', 2, 5, 4),
+  (4, 2, 2, 'الصحة والسلامة المهنية 2', 'Occupational Health 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 3, 'السيطرة على الامراض الانتقالية', 'Control of Communicable Diseases', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 4, 'علم الوبائيات السريرية 2', 'Clinical Epidemiology 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 5, 'الامراض غير الانتقالية 2', 'Non Communicable Diseases 2', 'تخصصية / اساسية', 'English', 2, 4, 4),
+  (4, 2, 6, 'مشروع بحث', 'Research Project', 'تخصصية / مساعدة', 'English', 0, 6, 4),
+  (4, 2, 7, 'اخلاقيات المهنة', 'Professional Ethics', 'عامة', 'العربية', 2, 0, 2)
 ) as v(stage, term, sort, name, name_en, category, language, th, pr, units)
 where d.code = 'CHT'
 on conflict (department_id, stage, term, name) do nothing;
+-- </plans>
 
 insert into public.settings (id, current_year_id)
 values (1, (select id from public.academic_years where label = '2026-2027'))

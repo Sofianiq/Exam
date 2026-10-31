@@ -1,21 +1,48 @@
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, BookOpen, CheckCircle2, ClipboardCheck, GraduationCap, History, Hourglass, Layers, Lock, LockOpen, Undo2 } from 'lucide-react'
+import { AlertTriangle, BookOpen, Megaphone, CheckCircle2, ClipboardCheck, GraduationCap, History, Hourglass, Layers, Lock, LockOpen, Undo2 } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
+import { isActive, useAnnouncements } from '../app/announcements'
 import { completionOf, studentCount, useProgress, useSubjects } from '../app/queries'
 import { useSession } from '../app/session'
 import { SubjectCard } from '../components/SubjectCard'
+import { AnnouncementCard } from './AnnouncementsPage'
 import { Badge, Button, Card, CardHeader, EmptyState, LoadingBlock, PageHeader, ProgressBar, StatCard, cx } from '../components/ui'
 import { backend } from '../data'
 import { displayName, fmtDateTime, fmtPct, yearLabel } from '../lib/format'
 import { ACTION_LABEL, ROLE_LABEL } from '../lib/labels'
-import { canSeeAudit, canToggleEntry, canViewAll, entryOpenFor } from '../lib/perm'
+import { canSeeAudit, canToggleEntry, canViewAll, entryOpenFor, gradesHiddenFor } from '../lib/perm'
 import type { SubjectProgress } from '../lib/types'
 
 export function DashboardPage() {
   const s = useSession()
   if (s.profile.role === 'teacher') return <TeacherDashboard />
   return <OverviewDashboard />
+}
+
+/** آخر الإعلانات النافذة (حتى 3) في أعلى لوحة المتابعة */
+function LatestAnnouncements() {
+  const q = useAnnouncements()
+  const list = (q.data ?? []).filter(isActive).slice(0, 3)
+  if (list.length === 0) return null
+  return (
+    <section className="mb-6">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 font-semibold">
+          <Megaphone className="size-4.5 text-gold-text" />
+          الإعلانات
+        </h2>
+        <Link to="/announcements" className="text-sm text-primary-text hover:underline">
+          كل الإعلانات
+        </Link>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {list.map((a) => (
+          <AnnouncementCard key={a.id} a={a} compact />
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function Greeting() {
@@ -43,6 +70,7 @@ function TeacherDashboard() {
     <div>
       <Greeting />
       <EntryNotice />
+      <LatestAnnouncements />
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="موادي هذه السنة" value={subjects.length} icon={<BookOpen className="size-5" />} />
         <StatCard label="قيد الإدخال" value={count('draft')} icon={<Hourglass className="size-5" />} tone="neutral" />
@@ -85,7 +113,8 @@ function EntryNotice() {
     <div className="mb-6 flex items-center gap-3 rounded-xl border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
       <Lock className="size-5 shrink-0" />
       <span>
-        <b>إدخال الدرجات مغلق حالياً</b> بقرار من إدارة الكلية. يمكنك الاطلاع على القوائم دون تعديلها.
+        <b>إدخال الدرجات مغلق حالياً</b> بقرار من إدارة الكلية.{' '}
+        {gradesHiddenFor(s.profile, s.settings, dept) ? 'وقد حُجبت الدرجات عن التدريسيين لسريتها بعد انتهاء مدة الإدخال.' : 'يمكنك الاطلاع على القوائم دون تعديلها.'}
       </span>
     </div>
   )
@@ -105,6 +134,7 @@ function OverviewDashboard() {
     <div>
       <Greeting />
       {s.profile.role === 'head' && <EntryNotice />}
+      <LatestAnnouncements />
       {progressQ.isLoading ? (
         <LoadingBlock />
       ) : (

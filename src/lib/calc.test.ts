@@ -18,6 +18,7 @@ const settings: Settings = {
   ],
   average_mode: 'simple',
   idle_minutes: 60,
+  hide_grades_when_closed: true,
   current_year_id: null,
   second_round_cap: null,
   max_failed_subjects: 2,
@@ -98,10 +99,39 @@ describe('computeRow', () => {
   })
 })
 
+describe('ministerial subjects (تقويمية)', () => {
+  const ministerial = { coursework_max: 40, cw_practical_max: 0, practical_max: 0, final_max: 60, final_min: 30 }
+  it('fails a student below 30/60 in the final even when the total is ≥ 50', () => {
+    const r = computeRow(ministerial, g(35, null, null, 29), settings)
+    expect(r.total).toBe(64)
+    expect(r.passed).toBe(false)
+    expect(r.belowFinalMin).toBe(true)
+    expect(r.label).toBe('راسب')
+    expect(r.needsR2).toBe(true)
+    expect(r.finalPassed).toBe(false)
+  })
+  it('passes with exactly 30/60 in the final', () => {
+    const r = computeRow(ministerial, g(20, null, null, 30), settings)
+    expect(r).toMatchObject({ total: 50, passed: true, belowFinalMin: false, label: 'مقبول' })
+  })
+  it('applies the same condition in the second round', () => {
+    const r = computeRow(ministerial, { ...g(35, null, null, 29), r2_final_theory: 28 }, settings)
+    expect(r).toMatchObject({ finalRound: 2, finalTotal: 63, finalPassed: false, finalBelowMin: true })
+    const ok = computeRow(ministerial, { ...g(35, null, null, 29), r2_final_theory: 31 }, settings)
+    expect(ok).toMatchObject({ finalTotal: 66, finalPassed: true, finalLabel: 'متوسط' })
+  })
+  it('counts a ministerial failure as a failed subject in the summary and statistics', () => {
+    const r = computeRow(ministerial, g(35, null, null, 29), settings)
+    expect(sheetStats([r])).toMatchObject({ pass: 0, fail: 1 })
+    const sum = summarizeStudent([{ name: 'وزارية', units: 3 }], [r], settings)
+    expect(sum.r1Failed).toEqual(['وزارية'])
+  })
+})
+
 describe('statistics', () => {
   it('computes sheet statistics', () => {
     const rows = [g(20, null, null, 60), g(10, null, null, 30), g(25, null, null, 70), g(null, null, null, null)].map((v) => computeRow(theory, v, settings))
-    const s = sheetStats(rows, 50)
+    const s = sheetStats(rows)
     expect(s).toMatchObject({ count: 4, complete: 3, graded: 3, pass: 2, fail: 1, max: 95, min: 40, avg: 71.67 })
   })
   it('ranks with ties like Excel RANK', () => {

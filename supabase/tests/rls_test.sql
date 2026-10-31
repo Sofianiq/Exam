@@ -225,8 +225,11 @@ select t.ok((select public.grade_r2_total(s, g) from public.subjects s join publ
 update public.settings set second_round_cap = null where id = 1;
 
 -- ===== الخطة الدراسية =====
-select t.ok((select count(*) from public.curriculum c join public.departments d on d.id = c.department_id where d.code = 'CHT') = 31,
-            'CHT study plan seeded (31 subjects)');
+select t.ok((select count(*) from public.curriculum c join public.departments d on d.id = c.department_id where d.code = 'CHT') = 56,
+            'CHT study plan seeded (4 stages, 56 subjects)');
+select t.ok((select count(*) from public.curriculum) = 218, 'study plans of 4 departments seeded (218 subjects)');
+select t.ok((select sum(units) from public.curriculum c join public.departments d on d.id = c.department_id
+             where d.code = 'ANS' and stage = 2 and term = 1) = 29, 'anesthesia stage 2 / term 1 = 29 units');
 select t.ok((select sum(units) from public.curriculum c join public.departments d on d.id = c.department_id
              where d.code = 'CHT' and stage = 2 and term = 1) = 24, 'stage 2 / term 1 = 24 units');
 :as_radhead
@@ -236,6 +239,79 @@ select t.expect_error(format($$insert into public.curriculum (department_id, sta
 select count(*) as cur_n from public.curriculum \gset
 delete from public.curriculum;
 select t.ok((select count(*) from public.curriculum) = :cur_n and :cur_n > 0, 'teachers read but cannot change the study plan');
+
+-- ===== المواد التقويمية (الوزارية) =====
+:as_radhead
+insert into public.subjects (year_id, department_id, stage, shift, term, name, units, teacher_ids, coursework_max, cw_practical_max, practical_max, ministerial, final_min)
+values (:'y', :'rad', 2, 'morning', 2, 'مادة وزارية', 3, array[:'t1_id']::uuid[], 40, 0, 0, true, 30) returning id as sm \gset
+select t.expect_error(format($$update public.subjects set final_min = 70 where id = %L$$, :'sm'), '%final_min%');
+:as_t1
+select public.save_grades(:'sm', format('[{"student_id":"%s","cw_theory":35,"final_theory":29},{"student_id":"%s","cw_theory":20,"final_theory":30}]', :'st1', :'st2')::jsonb);
+reset role;
+select t.ok((select public.grade_total(s, g) = 64 and public.grade_passed(s, g) = false
+             from public.subjects s join public.grades g on g.subject_id = s.id where s.id = :'sm' and g.student_id = :'st1'),
+            'ministerial: 35 + 29 = 64 but fails (final < 30/60)');
+select t.ok((select public.grade_passed(s, g) from public.subjects s join public.grades g on g.subject_id = s.id
+             where s.id = :'sm' and g.student_id = :'st2'), 'ministerial: 20 + 30 = 50 passes');
+select t.ok((select n_pass = 1 and n_fail = 1 and n_r2_needed >= 1 from public.subject_progress where subject_id = :'sm'),
+            'progress counts the ministerial failure');
+:as_t1
+select public.set_subject_status(:'sm', 'submitted');
+:as_cmt
+select public.set_subject_status(:'sm', 'approved');
+:as_t1
+select public.save_grades(:'sm', format('[{"student_id":"%s","cw_theory":35,"final_theory":29,"r2_final_theory":31}]', :'st1')::jsonb);
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":20,"final_theory":30,"r2_final_theory":40}]')$$, :'sm', :'st2'), '%ناجح في الدور الأول%');
+reset role;
+select t.ok((select public.grade_r2_total(s, g) = 66 from public.subjects s join public.grades g on g.subject_id = s.id
+             where s.id = :'sm' and g.student_id = :'st1'), 'ministerial failure may sit the second round');
+
+-- ===== حجب الدرجات عن التدريسي عند غلق الإدخال =====
+:as_t1
+select t.ok((select count(*) > 0 from public.grades where subject_id = :'sm'), 'teacher sees grades while entry is open');
+:as_asst
+select public.set_entry_open(false, :'rad');
+:as_t1
+select t.ok((select count(*) = 0 from public.grades), 'teacher sees no grades after entry is closed');
+select t.ok((select coalesce(sum(n_complete), 0) = 0 from public.subject_progress), 'teacher progress reveals no grades');
+select t.expect_error(format($$select public.save_grades(%L, '[{"student_id":"%s","cw_theory":20}]')$$, :'sm', :'st2'), '%مغلق%');
+:as_radhead
+select t.ok((select count(*) > 0 from public.grades where subject_id = :'sm'), 'head still sees the grades');
+:as_admin
+update public.settings set hide_grades_when_closed = false where id = 1;
+:as_t1
+select t.ok((select count(*) > 0 from public.grades where subject_id = :'sm'), 'hiding can be switched off in settings');
+:as_admin
+update public.settings set hide_grades_when_closed = true where id = 1;
+:as_asst
+select public.set_entry_open(true, :'rad');
+
+-- ===== الإعلانات =====
+:as_dean
+insert into public.announcements (title, body, level) values ('إعلان عام', 'لكل المستخدمين', 'important') returning id as an1 \gset
+insert into public.announcements (title, body, audience) values ('للمقررين فقط', '', 'heads');
+:as_radhead
+insert into public.announcements (title, body, department_id, audience) values ('إعلان قسم الأشعة', 'لتدريسيي القسم', :'rad', 'teachers') returning id as an2 \gset
+select t.expect_error(format($$insert into public.announcements (title, department_id) values ('x', %L)$$, :'ans'), '%صلاحية%');
+select t.expect_error($$insert into public.announcements (title) values ('للكلية')$$, '%صلاحية%');
+select t.ok((select created_by_name from public.announcements where id = :'an2') = 'مقرر الأشعة', 'author name stamped');
+:as_t1
+select t.ok((select count(*) from public.announcements) = 2, 'teacher reads college + own department announcements');
+select t.expect_error($$insert into public.announcements (title) values ('x')$$, '%صلاحية%');
+update public.announcements set title = 'تلاعب' where id = :'an1';
+select t.ok((select title from public.announcements where id = :'an1') = 'إعلان عام', 'teacher cannot edit announcements');
+:as_t2
+select t.ok((select count(*) from public.announcements) = 1, 'other department teacher does not see the RAD announcement');
+:as_anshead
+select t.ok((select count(*) from public.announcements) = 2, 'heads see the heads-only announcement');
+:as_dean
+update public.announcements set expires_at = now() - interval '1 day' where id = :'an2';
+:as_t1
+select t.ok((select count(*) from public.announcements) = 1, 'expired announcements disappear');
+:as_radhead
+delete from public.announcements where id = :'an2';
+reset role;
+select t.ok((select count(*) from public.audit_log where action like 'announcement.%') >= 4, 'announcements audited');
 
 -- ===== كلمات المرور =====
 :as_t1

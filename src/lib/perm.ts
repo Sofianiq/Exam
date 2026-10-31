@@ -57,6 +57,13 @@ export const entryOpenFor = (settings: Pick<Settings, 'entry_open'> | null | und
   (settings?.entry_open ?? true) && (dept?.entry_open ?? true)
 
 /** سبب منع تعديل الدرجات أو null إذا كان التعديل مسموحاً */
+/** تُحجب الدرجات عن التدريسي عند غلق الإدخال (إن فُعّل ذلك في الإعدادات): تنتهي مهمته بتسليم الدرجات */
+export const gradesHiddenFor = (
+  p: Who | null | undefined,
+  settings: Pick<Settings, 'entry_open' | 'hide_grades_when_closed'> | null | undefined,
+  dept: Pick<Department, 'entry_open'> | null | undefined,
+) => p?.role === 'teacher' && !!settings?.hide_grades_when_closed && !entryOpenFor(settings, dept)
+
 export function gradeEditBlock(
   p: Who | null | undefined,
   s: Pick<Subject, 'department_id' | 'teacher_ids' | 'status'>,
