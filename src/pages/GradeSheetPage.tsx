@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   CloudOff,
+  EyeOff,
   FileSpreadsheet,
   Info,
   Loader2,
@@ -31,7 +32,7 @@ import { bandCounts, sheetStats } from '../lib/calc'
 import { displayName, fmtDateTime, fmtNum, fmtPct, fmtTime, yearLabel } from '../lib/format'
 import { SHIFT_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { normalizeArabic } from '../lib/parse'
-import { canViewAll, gradeEditBlock, gradeEditBlockR2, workflowActions } from '../lib/perm'
+import { canViewAll, gradeEditBlock, gradeEditBlockR2, gradesHiddenFor, workflowActions } from '../lib/perm'
 import type { Round, SubjectStatus } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
@@ -86,7 +87,7 @@ export function GradeSheetPage() {
 
   const active = students.filter((st) => st.status === 'active')
   const results = active.map((st) => editor.parsed[st.id]?.result).filter((r): r is NonNullable<typeof r> => !!r)
-  const stats = sheetStats(results, s.settings.pass_mark)
+  const stats = sheetStats(results)
   const bands = bandCounts(results.map((r) => r.total), s.settings.grade_scale)
   const incomplete = active.length - stats.complete
   // الدور الثاني: الطلبة غير الناجحين في الدور الأول فقط
@@ -162,6 +163,23 @@ export function GradeSheetPage() {
 
   if (subjectQ.isLoading || (subject && (studentsQ.isLoading || gradesQ.isLoading))) return <LoadingBlock label="جارٍ تحميل قائمة الدرجات…" />
   if (!subject) return <NotFoundPage title="المادة غير موجودة" message="قد تكون المادة محذوفة أو غير مسندة إليك." />
+  if (gradesHiddenFor(s.profile, s.settings, dept)) {
+    return (
+      <div>
+        <PageHeader title={subject.name} subtitle={`${dept?.name ?? ''} — ${TERM_LABEL[subject.term]}`} />
+        <Card className="mx-auto max-w-xl px-6 py-10 text-center">
+          <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-full bg-surface-2 text-muted">
+            <EyeOff className="size-7" />
+          </div>
+          <h2 className="text-lg font-bold">الدرجات محجوبة</h2>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
+            أُغلق إدخال الدرجات من قبل الإدارة، وانتهت بذلك مهمة التدريسي في هذه المادة. درجات الطلبة سرية لدى اللجنة الامتحانية ولا يمكن عرضها حتى يُعاد فتح
+            الإدخال.
+          </p>
+        </Card>
+      </div>
+    )
+  }
 
   const refresh = () => invalidate('subject', 'subjects', 'progress', 'audit', 'grades')
 
@@ -339,7 +357,12 @@ export function GradeSheetPage() {
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <Badge tone="primary">السعي {subject.coursework_max}{subject.cw_practical_max > 0 ? ` (${subject.coursework_max - subject.cw_practical_max}+${subject.cw_practical_max})` : ''}</Badge>
             {subject.practical_max > 0 && <Badge tone="primary">العملي النهائي {subject.practical_max}</Badge>}
-            <Badge tone="primary">النظري النهائي {subject.final_max}</Badge>
+            <Badge tone="primary">{subject.practical_max > 0 ? 'النظري النهائي' : 'الامتحان النهائي'} {subject.final_max}</Badge>
+            {subject.ministerial && (
+              <Badge tone="gold">
+                تقويمية (وزارية): يُشترط {subject.final_min ?? '—'} من {subject.final_max} في الامتحان النهائي
+              </Badge>
+            )}
           </div>
           <SaveIndicator editor={editor} readOnly={readOnly} />
           <div className="ms-auto flex flex-wrap items-center gap-2">
@@ -425,7 +448,6 @@ export function GradeSheetPage() {
                 drafts={editor.drafts}
                 parsed={editor.parsed}
                 readOnly={readOnly}
-                passMark={s.settings.pass_mark}
                 onChange={editor.update}
                 onPasteRows={(n) => toast.info(`تم لصق درجات ${n} طالب`)}
               />
@@ -441,7 +463,6 @@ export function GradeSheetPage() {
               parsed={editor.parsed}
               readOnly={readOnly}
               highlightMissing={highlight}
-              passMark={s.settings.pass_mark}
               onChange={editor.update}
               onPasteRows={(n) => toast.info(`تم لصق درجات ${n} طالب`)}
             />
@@ -479,7 +500,7 @@ export function GradeSheetPage() {
         )}
       </div>
 
-      <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} passMark={s.settings.pass_mark} />
+      <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} />
     </div>
   )
 }

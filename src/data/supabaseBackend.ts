@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { usernameToEmail } from '../lib/password'
 import type {
+  Announcement,
+  AnnouncementInput,
   AcademicYear,
   AccountInput,
   AccountUpdate,
@@ -93,6 +95,8 @@ const SUBJECT_WRITABLE = [
   'cw_practical_max',
   'practical_max',
   'sort',
+  'ministerial',
+  'final_min',
 ] as const
 
 export class SupabaseBackend implements Backend {
@@ -169,6 +173,7 @@ export class SupabaseBackend implements Backend {
       pass_mark: Number(s.pass_mark),
       second_round_cap: s.second_round_cap == null ? null : Number(s.second_round_cap),
       max_failed_subjects: s.max_failed_subjects ?? 2,
+      hide_grades_when_closed: s.hide_grades_when_closed ?? true,
     }
   }
 
@@ -378,6 +383,7 @@ export class SupabaseBackend implements Backend {
       theory_hours: Number(c.theory_hours),
       practical_hours: Number(c.practical_hours),
       units: Number(c.units),
+      ministerial: !!c.ministerial,
     }))
   }
 
@@ -394,6 +400,7 @@ export class SupabaseBackend implements Backend {
       theory_hours: c.theory_hours,
       practical_hours: c.practical_hours,
       units: c.units,
+      ministerial: !!c.ministerial,
     }
     const res = c.id
       ? await this.sb.from('curriculum').update(payload).eq('id', c.id).select('id')
@@ -405,6 +412,33 @@ export class SupabaseBackend implements Backend {
   async deleteCurriculum(id: string): Promise<void> {
     const rows = must(await this.sb.from('curriculum').delete().eq('id', id).select('id'))
     if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
+  }
+
+  // ---------- الإعلانات ----------
+  async listAnnouncements(): Promise<Announcement[]> {
+    return must(await this.sb.from('announcements').select('*').order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(200)) as Announcement[]
+  }
+
+  async saveAnnouncement(a: AnnouncementInput): Promise<void> {
+    const payload = {
+      title: a.title.trim(),
+      body: a.body.trim(),
+      level: a.level,
+      department_id: a.department_id,
+      audience: a.audience,
+      pinned: a.pinned,
+      expires_at: a.expires_at,
+    }
+    const res = a.id
+      ? await this.sb.from('announcements').update(payload).eq('id', a.id).select('id')
+      : await this.sb.from('announcements').insert(payload).select('id')
+    const rows = must(res)
+    if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية تعديل هذا الإعلان.')
+  }
+
+  async deleteAnnouncement(id: string): Promise<void> {
+    const rows = must(await this.sb.from('announcements').delete().eq('id', id).select('id'))
+    if (!rows || rows.length === 0) throw new AppError('ليست لديك صلاحية حذف هذا الإعلان.')
   }
 
   // ---------- الدرجات ----------
@@ -492,6 +526,8 @@ function normalizeSubject(s: Subject): Subject {
     cw_practical_max: Number(s.cw_practical_max),
     practical_max: Number(s.practical_max),
     final_max: Number(s.final_max),
+    final_min: num(s.final_min),
+    ministerial: !!s.ministerial,
     teacher_ids: s.teacher_ids ?? [],
   }
 }

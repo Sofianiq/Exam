@@ -11,7 +11,7 @@ import { canManageDepartment } from '../lib/perm'
 import type { ClassKey, Shift, Subject, Term } from '../lib/types'
 import { useConfirm, useToast } from './feedback'
 import { SubjectDialog } from './SubjectDialog'
-import { Button, Card, Checkbox, EmptyState, Field, IconButton, LoadingBlock, Modal, ProgressBar, Select, StatusBadge } from './ui'
+import { Badge, Button, Card, Checkbox, EmptyState, Field, IconButton, LoadingBlock, Modal, ProgressBar, Select, StatusBadge } from './ui'
 
 export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term }) {
   const s = useSession()
@@ -127,6 +127,11 @@ export function SubjectsTab({ classKey, term }: { classKey: ClassKey; term: Term
                         {x.name}
                       </Link>
                       {x.units != null && <span className="ms-2 text-xs text-muted">({unitsLabel(x.units)})</span>}
+                      {x.ministerial && (
+                        <Badge tone="gold" className="ms-2">
+                          وزارية
+                        </Badge>
+                      )}
                     </td>
                     <td className="text-sm">
                       {x.teacher_ids.length ? x.teacher_ids.map((id) => displayName(s.profileById(id))).join(' + ') : <span className="text-warning">غير محدد</span>}
@@ -314,6 +319,8 @@ function ImportPlanDialog({
           coursework_max: sc.coursework_max,
           cw_practical_max: sc.cw_practical_max,
           practical_max: sc.practical_max,
+          ministerial: sc.ministerial,
+          final_min: sc.final_min,
           sort: sort++,
         })
         n++

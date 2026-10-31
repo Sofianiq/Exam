@@ -107,6 +107,7 @@ export interface ParsedPlanRow {
   theory_hours: number
   practical_hours: number
   units: number
+  ministerial: boolean
 }
 
 const DASH = /^[-_–—]?$/
@@ -118,7 +119,7 @@ const num = (c: string) => {
 const ARABIC_LETTERS = /[\u0600-\u06FF]/
 const LATIN_LETTERS = /[A-Za-z]/
 const LANGS = new Set(['english', 'العربية', 'الانكليزية', 'الإنجليزية', 'الانجليزية', 'عربي', 'انكليزي'])
-const CATEGORY = /تخصصية|عامة|اساسية|أساسية|مساعدة|اختيارية/
+const CATEGORY = /تخصصي|عامة|اساسي|أساسي|مساعد|اختيارية|وزاري|تقويمي/
 
 /**
  * يحوّل صفوف جدول الخطة الدراسية الملصوق من Word أو Excel
@@ -136,10 +137,11 @@ export function parsePlanRows(text: string): ParsedPlanRow[] {
     const rest = cells.slice(0, -4).filter((c) => c !== '' && !/^\d+$/.test(toLatinDigits(c)))
     const language = rest.find((c) => LANGS.has(c.toLowerCase())) ?? null
     const category = rest.find((c) => CATEGORY.test(c)) ?? null
-    const name = rest.find((c) => ARABIC_LETTERS.test(c) && c !== language && c !== category)
+    const ministerial = rest.some((c) => /وزاري|تقويمي/.test(c))
+    const name = rest.find((c) => ARABIC_LETTERS.test(c) && c !== language && c !== category && !/^(وزارية|تقويمية)$/.test(c))
     const name_en = rest.find((c) => LATIN_LETTERS.test(c) && !ARABIC_LETTERS.test(c) && c !== language) ?? null
     if (!name || units <= 0) continue
-    out.push({ name, name_en, category, language, theory_hours: th, practical_hours: pr, units })
+    out.push({ name, name_en, category, language, theory_hours: th, practical_hours: pr, units, ministerial })
   }
   return out
 }

@@ -16,12 +16,11 @@ interface Props {
   parsed: Record<string, ParsedRow>
   readOnly: boolean
   highlightMissing: boolean
-  passMark: number
   onChange: (studentId: string, patch: Partial<DraftRow>) => void
   onPasteRows?: (count: number) => void
 }
 
-export function GradeGrid({ subject, students, numberOf, drafts, parsed, readOnly, highlightMissing, passMark, onChange, onPasteRows }: Props) {
+export function GradeGrid({ subject, students, numberOf, drafts, parsed, readOnly, highlightMissing, onChange, onPasteRows }: Props) {
   const comps = componentsOf(subject)
   const cw = comps.filter((c) => c.group === 'coursework')
   const fin = comps.filter((c) => c.group === 'final')
@@ -174,7 +173,7 @@ export function GradeGrid({ subject, students, numberOf, drafts, parsed, readOnl
           const p = parsed[st.id]
           const res = p?.result
           const inactive = st.status !== 'active'
-          const fail = res?.total != null && res.total < passMark
+          const fail = res?.total != null && res.passed === false
           let ci = 0
           return (
             <tr key={st.id} className={cx(inactive && 'opacity-55')}>
@@ -187,7 +186,7 @@ export function GradeGrid({ subject, students, numberOf, drafts, parsed, readOnl
               {showCwSum && sumCell(res?.coursework ?? null, subject.coursework_max)}
               {fin.map((c) => cell(st, r, c, ci++))}
               {showFinSum && sumCell(res?.finalSum ?? null, 100 - subject.coursework_max)}
-              <td className={cx('px-2 text-center text-base font-bold tabular-nums', fail ? 'text-danger' : 'text-ink')}>
+              <td className={cx('px-2 text-center text-base font-bold tabular-nums', fail ? 'text-danger' : 'text-ink')} title={res?.belowFinalMin ? 'لم يبلغ الحد الأدنى في الامتحان النهائي (مادة تقويمية)' : undefined}>
                 {res?.special ? <span className="text-sm text-warning">{SPECIAL_LABEL[res.special]}</span> : fmtNum(res?.total ?? null)}
               </td>
               <td className={cx('px-2 text-center text-xs font-medium', fail ? 'text-danger' : 'text-muted')}>{res?.label}</td>

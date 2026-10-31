@@ -126,11 +126,57 @@ describe('DemoBackend', () => {
   it('ships the CHT study plan and lets heads edit only their department', async () => {
     await login('cht.head')
     const plan = await b.listCurriculum('d-cht')
-    expect(plan).toHaveLength(31)
+    expect(plan).toHaveLength(56)
     expect(plan.filter((c) => c.stage === 2 && c.term === 1).reduce((a, c) => a + c.units, 0)).toBe(24)
-    await b.saveCurriculum({ department_id: 'd-cht', stage: 3, term: 1, sort: 1, name: 'مادة جديدة', name_en: null, category: null, language: null, theory_hours: 2, practical_hours: 2, units: 3 })
+    await b.saveCurriculum({ department_id: 'd-cht', stage: 3, term: 1, sort: 1, name: 'مادة جديدة', name_en: null, category: null, language: null, theory_hours: 2, practical_hours: 2, units: 3, ministerial: true })
     await expect(
-      b.saveCurriculum({ department_id: 'd-rad', stage: 1, term: 1, sort: 1, name: 'x', name_en: null, category: null, language: null, theory_hours: 1, practical_hours: 0, units: 1 }),
+      b.saveCurriculum({ department_id: 'd-rad', stage: 1, term: 1, sort: 1, name: 'x', name_en: null, category: null, language: null, theory_hours: 1, practical_hours: 0, units: 1, ministerial: false }),
     ).rejects.toThrow(/صلاحية/)
+  })
+
+  it('ships the study plans of the four departments with official unit totals', async () => {
+    await login('dean')
+    const total = (await Promise.all(['d-ans', 'd-rad', 'd-den', 'd-cht'].map((d) => b.listCurriculum(d)))).map((x) => x.length)
+    expect(total).toEqual([56, 55, 51, 56])
+    const den = await b.listCurriculum('d-den')
+    expect(den.filter((c) => c.stage === 4 && c.term === 2).reduce((a, c) => a + c.units, 0)).toBe(26)
+  })
+
+  it('hides all grades from teachers while entry is closed', async () => {
+    const me = await login('rad01')
+    const mine = await b.listSubjects({ year_id: 'y-2026', teacher_id: me.id })
+    const withGrades = mine.find((s) => s.status === 'approved')!
+    expect((await b.getGrades([withGrades.id])).length).toBeGreaterThan(0)
+    await login('vice')
+    await b.setEntryOpen(false)
+    await login('rad01')
+    expect(await b.getGrades([withGrades.id])).toHaveLength(0)
+    expect((await b.listProgress('y-2026')).every((p) => p.n_complete === 0)).toBe(true)
+    await login('rad.head')
+    expect((await b.getGrades([withGrades.id])).length).toBeGreaterThan(0)
+    await login('admin')
+    await b.updateSettings({ hide_grades_when_closed: false })
+    await login('rad01')
+    expect((await b.getGrades([withGrades.id])).length).toBeGreaterThan(0)
+  })
+
+  it('publishes announcements to the right audience', async () => {
+    await login('dean')
+    await b.saveAnnouncement({ title: 'عام', body: '', level: 'urgent', department_id: null, audience: 'all', pinned: false, expires_at: null })
+    await login('cht.head')
+    await expect(b.saveAnnouncement({ title: 'للكلية', body: '', level: 'info', department_id: null, audience: 'all', pinned: false, expires_at: null })).rejects.toThrow(/صلاحية/)
+    await b.saveAnnouncement({ title: 'لقسم صحة المجتمع', body: '', level: 'info', department_id: 'd-cht', audience: 'teachers', pinned: false, expires_at: null })
+    await login('rad01')
+    const titles = (await b.listAnnouncements()).map((a) => a.title)
+    expect(titles).toContain('عام')
+    expect(titles).not.toContain('لقسم صحة المجتمع')
+    await expect(b.deleteAnnouncement((await b.listAnnouncements())[0].id)).rejects.toThrow(/صلاحية/)
+  })
+
+  it('applies the ministerial (تقويمية) rule in the demo data', async () => {
+    await login('dean')
+    const subs = await b.listSubjects({ year_id: 'y-2026', department_id: 'd-cht' })
+    const m = subs.find((s) => s.ministerial && s.term === 1)!
+    expect(m).toMatchObject({ coursework_max: 40, practical_max: 0, final_max: 60, final_min: 30 })
   })
 })

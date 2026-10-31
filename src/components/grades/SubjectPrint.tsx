@@ -11,14 +11,12 @@ export function SubjectPrint({
   parsed,
   stats,
   teachers,
-  passMark,
 }: {
   subject: Subject
   students: Student[]
   parsed: Record<string, ParsedRow>
   stats: SheetStats
   teachers: string
-  passMark: number
 }) {
   const comps = componentsOf(subject)
   const cw = comps.filter((c) => c.group === 'coursework')
@@ -39,6 +37,7 @@ export function SubjectPrint({
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span>التدريسي: {teachers || '—'}</span>
             <span>حالة القائمة: {STATUS_LABEL[subject.status]}</span>
+            {subject.ministerial && <span>مادة تقويمية (وزارية): يُشترط {subject.final_min} في الامتحان النهائي</span>}
             <span>عدد الطلبة: {students.length}</span>
           </div>
         }
@@ -81,7 +80,7 @@ export function SubjectPrint({
           {students.map((st, i) => {
             const p = parsed[st.id]
             const r = p?.result
-            const fail = r?.finalTotal != null && r.finalTotal < passMark
+            const fail = r?.finalTotal != null && r.finalPassed === false
             const showR2 = !!r && r.needsR2 && r.r2Complete
             return (
               <tr key={st.id}>

@@ -116,6 +116,10 @@ export function LoginPage({ onLogin, notice }: { onLogin: (p: Profile) => void; 
               </div>
             </div>
           )}
+          <p className="mt-10 text-center text-[0.7rem] leading-relaxed text-faint lg:hidden">
+            جامعة السراج الأهلية — إعداد وتطوير: م.م سفيان محمد
+            <br />© {new Date().getFullYear()} — نظام إدارة اللجنة الامتحانية
+          </p>
         </div>
       </div>
 
@@ -131,6 +135,10 @@ export function LoginPage({ onLogin, notice }: { onLogin: (p: Profile) => void; 
               {t}
             </div>
           ))}
+        </div>
+        <div className="absolute inset-x-0 bottom-6 text-center text-xs leading-relaxed text-white/60">
+          جامعة السراج الأهلية — إعداد وتطوير: م.م سفيان محمد
+          <br />© {new Date().getFullYear()} — نظام إدارة اللجنة الامتحانية
         </div>
       </div>
     </div>

@@ -51,6 +51,7 @@ function GeneralSettings() {
         idle_minutes: Number(form.idle_minutes),
         second_round_cap: form.second_round_cap == null || Number.isNaN(form.second_round_cap) ? null : Number(form.second_round_cap),
         max_failed_subjects: Number(form.max_failed_subjects),
+        hide_grades_when_closed: form.hide_grades_when_closed,
         grade_scale: scale.map((b) => ({ min: Number(b.min), label: b.label.trim() })),
       })
       await qc.invalidateQueries({ queryKey: ['settings'] })
@@ -121,6 +122,17 @@ function GeneralSettings() {
                 onChange={(e) => set('second_round_cap', e.target.value === '' ? null : Number(e.target.value))}
               />
             </Field>
+          </div>
+          <div className="rounded-lg border border-line bg-surface-2/50 p-3">
+            <Checkbox
+              checked={form.hide_grades_when_closed}
+              onChange={(v) => set('hide_grades_when_closed', v)}
+              label="حجب الدرجات عن التدريسيين عند غلق إدخال الدرجات"
+            />
+            <p className="mt-1.5 ps-6 text-xs leading-relaxed text-muted">
+              تنتهي مهمة التدريسي بتسليم الدرجات؛ بعد الغلق (للكلية أو للقسم) لا يستطيع رؤية أي درجة حتى يُعاد فتح الإدخال. لا يؤثر ذلك على مقرري الأقسام
+              واللجنة والإدارة.
+            </p>
           </div>
         </div>
         <div>

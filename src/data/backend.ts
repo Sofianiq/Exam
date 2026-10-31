@@ -1,6 +1,8 @@
 import type {
   AcademicYear,
   AccountInput,
+  Announcement,
+  AnnouncementInput,
   AccountUpdate,
   AuditEntry,
   AuditFilter,
@@ -83,6 +85,11 @@ export interface Backend {
   listCurriculum(departmentId: string): Promise<CurriculumItem[]>
   saveCurriculum(c: CurriculumInput): Promise<void>
   deleteCurriculum(id: string): Promise<void>
+
+  // الإعلانات (تُعاد الإعلانات التي يحق للمستخدم قراءتها فقط، الأحدث أولاً)
+  listAnnouncements(): Promise<Announcement[]>
+  saveAnnouncement(a: AnnouncementInput): Promise<void>
+  deleteAnnouncement(id: string): Promise<void>
 
   getGrades(subjectIds: string[]): Promise<Grade[]>
   saveGrades(subjectId: string, rows: GradeRowInput[], reason?: string | null): Promise<string>

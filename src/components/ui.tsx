@@ -312,15 +312,21 @@ export function Modal({
   dismissable?: boolean
 }) {
   const panel = useRef<HTMLDivElement>(null)
+  // يُحفظ آخر onClose في مرجع حتى لا يُعاد تشغيل التأثير (ونقل التركيز إلى أول حقل) مع كل ضغطة مفتاح
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
   useEffect(() => {
     if (!open) return
     const prev = document.activeElement as HTMLElement | null
     const t = setTimeout(() => {
+      if (panel.current?.contains(document.activeElement)) return
       const el = panel.current?.querySelector<HTMLElement>('[data-autofocus], input:not([type=hidden]):not([disabled]), textarea, select')
       ;(el ?? panel.current)?.focus()
     }, 30)
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissable) onClose()
+      if (e.key === 'Escape' && dismissable) closeRef.current()
     }
     document.addEventListener('keydown', onKey)
     document.body.style.overflow = 'hidden'
@@ -330,7 +336,7 @@ export function Modal({
       document.body.style.overflow = ''
       prev?.focus?.()
     }
-  }, [open, onClose, dismissable])
+  }, [open, dismissable])
   if (!open) return null
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4 no-print" onMouseDown={(e) => e.target === e.currentTarget && dismissable && onClose()}>

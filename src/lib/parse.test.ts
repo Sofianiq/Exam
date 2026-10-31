@@ -69,9 +69,9 @@ describe('parsePlanRows', () => {
       '\t\t\t\t\t14\t20\t34\t24',
     ].join('\n')
     expect(parsePlanRows(text)).toEqual([
-      { name: 'علم التغذية 1', name_en: 'Nutrition 1', category: 'تخصصية / اساسية', language: 'English', theory_hours: 2, practical_hours: 4, units: 4 },
-      { name: 'علم الدوائيات 1', name_en: 'Pharmacology 1', category: 'تخصصية / مساعدة', language: 'English', theory_hours: 2, practical_hours: 2, units: 3 },
-      { name: 'جرائم نظام البعث في العراق', name_en: 'Crimes of The Baath Regime in Iraq', category: 'عامة', language: 'العربية', theory_hours: 2, practical_hours: 0, units: 2 },
+      { name: 'علم التغذية 1', name_en: 'Nutrition 1', category: 'تخصصية / اساسية', language: 'English', theory_hours: 2, practical_hours: 4, units: 4, ministerial: false },
+      { name: 'علم الدوائيات 1', name_en: 'Pharmacology 1', category: 'تخصصية / مساعدة', language: 'English', theory_hours: 2, practical_hours: 2, units: 3, ministerial: false },
+      { name: 'جرائم نظام البعث في العراق', name_en: 'Crimes of The Baath Regime in Iraq', category: 'عامة', language: 'العربية', theory_hours: 2, practical_hours: 0, units: 2, ministerial: false },
     ])
   })
 })

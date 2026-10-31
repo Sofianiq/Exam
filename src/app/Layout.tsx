@@ -11,6 +11,7 @@ import {
   Lock,
   LockOpen,
   LogOut,
+  Megaphone,
   Menu,
   Moon,
   Settings as SettingsIcon,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { AnnouncementBanner } from '../components/AnnouncementBanner'
 import { ChangePasswordDialog } from '../components/ChangePasswordDialog'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, IconButton, Select, cx } from '../components/ui'
@@ -28,6 +30,7 @@ import { backend, isDemo } from '../data'
 import { displayName, yearLabel } from '../lib/format'
 import { ROLE_LABEL } from '../lib/labels'
 import { canEditSettings, canManageUsers, canReview, canSeeAudit, canToggleEntry, canViewAll } from '../lib/perm'
+import { isActive, useAnnouncements, useSeenAnnouncements } from './announcements'
 import { useInstallPrompt, useTheme } from './hooks'
 import { useSession } from './session'
 
@@ -53,8 +56,12 @@ export function Layout() {
     enabled: !!s.yearId && canReview(profile),
   })
   const pendingReview = progressQ.data?.filter((p) => p.status === 'submitted' || (p.status === 'approved' && p.r2_status === 'submitted')).length ?? 0
+  const annQ = useAnnouncements()
+  const { seen } = useSeenAnnouncements(profile.id)
+  const unreadAnn = (annQ.data ?? []).filter((a) => isActive(a) && !seen.has(a.id)).length
 
   const items: NavItem[] = [{ to: '/', label: 'لوحة المتابعة', icon: <LayoutDashboard className="size-4.5" />, end: true }]
+  items.push({ to: '/announcements', label: 'الإعلانات', icon: <Megaphone className="size-4.5" />, badge: unreadAnn })
   if (profile.role === 'teacher') items.push({ to: '/my-subjects', label: 'موادي الدراسية', icon: <BookOpenCheck className="size-4.5" /> })
   if (canViewAll(profile)) items.push({ to: '/departments', label: 'الأقسام العلمية', icon: <Building2 className="size-4.5" /> })
   if (profile.role === 'head' && profile.department_id)
@@ -113,12 +120,15 @@ export function Layout() {
         </nav>
         <div className="border-t border-white/10 px-4 py-3 text-[0.7rem] leading-relaxed text-white/55">
           {s.settings.university_name}
+          <br />
+          <span className="text-white/70">إعداد وتطوير: م.م سفيان محمد</span>
           <br />© {new Date().getFullYear()} — نظام إدارة اللجنة الامتحانية
         </div>
       </aside>
       {open && <div className="no-print fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={() => setOpen(false)} />}
 
       <Topbar onMenu={() => setOpen(true)} onChangePassword={() => setPwOpen(true)} />
+      <AnnouncementBanner />
       {isDemo && (
         <div className="no-print border-b border-gold/30 bg-gold-soft px-4 py-2 text-center text-xs text-gold-text sm:px-6">
           <b>وضع تجريبي:</b> البيانات وهمية ومحفوظة في هذا المتصفح فقط. لربط النظام بقاعدة البيانات الحقيقية راجع دليل التشغيل (README).

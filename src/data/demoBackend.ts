@@ -13,8 +13,11 @@ import {
   gradeEditBlock,
   gradeEditBlockR2,
   isSuper,
+  gradesHiddenFor,
 } from '../lib/perm'
 import type {
+  Announcement,
+  AnnouncementInput,
   AcademicYear,
   AccountInput,
   AccountUpdate,
@@ -123,6 +126,10 @@ export class DemoBackend implements Backend {
 
   private canSeeSubject(p: Profile, s: Subject) {
     return canViewAll(p) || (p.role === 'head' && p.department_id === s.department_id) || s.teacher_ids.includes(p.id)
+  }
+
+  private gradesHidden(p: Profile, s: Subject) {
+    return gradesHiddenFor(p, this.db.settings, this.db.departments.find((d) => d.id === s.department_id))
   }
 
   private canSeeClass(p: Profile, k: ClassKey) {
@@ -508,10 +515,12 @@ export class DemoBackend implements Backend {
     const cwp = round2(input.cw_practical_max)
     const pr = round2(input.practical_max)
     if (cw < 0 || pr < 0 || cw + pr > 100 || cwp < 0 || cwp > cw) fail('قيمة غير صالحة. تحقق من البيانات المدخلة.')
+    const finalMin = input.final_min == null ? null : round2(input.final_min)
+    if (finalMin != null && (finalMin < 0 || finalMin > 100 - cw)) fail('قيمة غير صالحة. تحقق من البيانات المدخلة.')
     if (this.db.subjects.some((s) => s.id !== input.id && sameClass(s, input) && s.term === input.term && s.name === name)) {
       fail('توجد مادة بنفس الاسم في هذا الصف والفصل.')
     }
-    const next = { ...input, name, coursework_max: cw, cw_practical_max: cwp, practical_max: pr, final_max: finalMaxOf(cw, pr) }
+    const next = { ...input, name, coursework_max: cw, cw_practical_max: cwp, practical_max: pr, final_max: finalMaxOf(cw, pr), ministerial: !!input.ministerial, final_min: finalMin }
     if (input.id) {
       const cur = this.db.subjects.find((s) => s.id === input.id) ?? fail('المادة غير موجودة')
       if (!canManageDepartment(me, cur.department_id)) fail('ليست لديك صلاحية لتنفيذ هذه العملية.')
@@ -519,6 +528,9 @@ export class DemoBackend implements Backend {
       const withValues = gs.some(hasValues)
       if (!sameClass(cur, next) && withValues) fail('لا يمكن نقل مادة تحتوي على درجات إلى صف آخر')
       const schemeChanged = cur.coursework_max !== cw || cur.cw_practical_max !== cwp || cur.practical_max !== pr
+      if ((schemeChanged || cur.final_min !== finalMin) && (cur.status === 'submitted' || cur.status === 'approved') && !isSuper(me)) {
+        fail('لا يمكن تعديل توزيع الدرجات لقائمة مرسلة أو معتمدة')
+      }
       if (schemeChanged) {
         if ((cur.status === 'submitted' || cur.status === 'approved') && !isSuper(me)) fail('لا يمكن تعديل توزيع الدرجات لقائمة مرسلة أو معتمدة')
         const tmax = cwTheoryMax(next)
@@ -667,7 +679,7 @@ export class DemoBackend implements Backend {
     await wait(20)
     const me = this.me()
     const visible = new Set(
-      this.db.subjects.filter((s) => subjectIds.includes(s.id) && this.canSeeSubject(me, s)).map((s) => s.id),
+      this.db.subjects.filter((s) => subjectIds.includes(s.id) && this.canSeeSubject(me, s) && !this.gradesHidden(me, s)).map((s) => s.id),
     )
     return clone(this.db.grades.filter((g) => visible.has(g.subject_id)))
   }
@@ -722,7 +734,7 @@ export class DemoBackend implements Backend {
       if (R2.some((f) => v[f] != null)) {
         const res = computeRow(s, v, this.db.settings)
         if (v.special == null && res.total == null) fail('درجات الدور الأول للطالب غير مكتملة')
-        if (v.special == null && res.total != null && res.total >= this.db.settings.pass_mark) fail('الطالب ناجح في الدور الأول ولا يحتاج إلى دور ثانٍ')
+        if (v.special == null && res.total != null && res.passed) fail('الطالب ناجح في الدور الأول ولا يحتاج إلى دور ثانٍ')
       }
       return { st: st!, v, cur, changed: r1Changed || r2Changed }
     })
@@ -752,7 +764,8 @@ export class DemoBackend implements Backend {
       .filter((s) => s.year_id === yearId && this.canSeeSubject(me, s))
       .map((s) => {
         const cls = this.db.students.filter((x) => sameClass(x, s) && x.status === 'active')
-        const gmap = new Map(this.db.grades.filter((g) => g.subject_id === s.id).map((g) => [g.student_id, g]))
+        // كما في قاعدة البيانات: الدرجات المحجوبة لا تدخل في إحصاءات التدريسي
+        const gmap = new Map(this.gradesHidden(me, s) ? [] : this.db.grades.filter((g) => g.subject_id === s.id).map((g) => [g.student_id, g]))
         const rs = cls.map((x) => computeRow(s, gmap.get(x.id), st))
         const totals = rs.map((r) => r.total).filter((t): t is number => t != null)
         return {
@@ -765,8 +778,8 @@ export class DemoBackend implements Backend {
           status: s.status,
           n_students: cls.length,
           n_complete: rs.filter((r) => r.complete).length,
-          n_pass: totals.filter((t) => t >= st.pass_mark).length,
-          n_fail: totals.filter((t) => t < st.pass_mark).length,
+          n_pass: rs.filter((r) => r.total != null && r.passed).length,
+          n_fail: rs.filter((r) => r.total != null && !r.passed).length,
           n_special: rs.filter((r) => r.special != null).length,
           avg_total: totals.length ? round2(totals.reduce((a, b) => a + b, 0) / totals.length) : null,
           r2_status: s.r2_status,
@@ -816,6 +829,72 @@ export class DemoBackend implements Backend {
     const c = this.db.curriculum.find((x) => x.id === id) ?? fail('المادة غير موجودة في الخطة')
     if (!canManageDepartment(me, c.department_id)) fail('ليست لديك صلاحية تعديل الخطة الدراسية لهذا القسم.')
     this.db.curriculum = this.db.curriculum.filter((x) => x.id !== id)
+    this.persist()
+  }
+
+  // ---------- الإعلانات (نفس قواعد قاعدة البيانات) ----------
+  private canReadAnnouncement(p: Profile, a: Announcement) {
+    if (canViewAll(p) || a.created_by === p.id) return true
+    if (a.expires_at && new Date(a.expires_at) <= new Date()) return false
+    const dept =
+      a.department_id == null ||
+      a.department_id === p.department_id ||
+      this.db.subjects.some((s) => s.department_id === a.department_id && s.teacher_ids.includes(p.id))
+    const who = a.audience === 'all' || (a.audience === 'teachers' && (p.role === 'teacher' || p.role === 'head')) || (a.audience === 'heads' && p.role === 'head')
+    return dept && who
+  }
+
+  private canEditAnnouncement(p: Profile, a: Pick<Announcement, 'department_id'> & { created_by?: string | null }) {
+    if (isSuper(p)) return true
+    return p.role === 'head' && a.department_id != null && a.department_id === p.department_id && (a.created_by === undefined || a.created_by === p.id)
+  }
+
+  async listAnnouncements(): Promise<Announcement[]> {
+    await wait(15)
+    const me = this.me()
+    return clone(
+      this.db.announcements
+        .filter((a) => this.canReadAnnouncement(me, a))
+        .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.created_at.localeCompare(a.created_at)),
+    )
+  }
+
+  async saveAnnouncement(a: AnnouncementInput): Promise<void> {
+    await wait()
+    const me = this.me()
+    const title = a.title.trim()
+    if (!title) fail('عنوان الإعلان مطلوب')
+    const now = new Date().toISOString()
+    if (a.id) {
+      const cur = this.db.announcements.find((x) => x.id === a.id) ?? fail('الإعلان غير موجود')
+      if (!this.canEditAnnouncement(me, cur) || !this.canEditAnnouncement(me, { department_id: a.department_id })) fail('ليست لديك صلاحية تعديل هذا الإعلان.')
+      Object.assign(cur, { ...a, title, body: a.body.trim(), updated_at: now })
+      this.audit('announcement.update', 'announcement', cur.id, cur.department_id, `تعديل إعلان: ${title}`)
+    } else {
+      if (!this.canEditAnnouncement(me, { department_id: a.department_id })) fail('ليست لديك صلاحية نشر إعلان لهذه الجهة')
+      const item: Announcement = {
+        ...a,
+        id: demoId('an'),
+        title,
+        body: a.body.trim(),
+        created_by: me.id,
+        created_by_name: me.title ? `${me.title} ${me.full_name}` : me.full_name,
+        created_at: now,
+        updated_at: now,
+      }
+      this.db.announcements.push(item)
+      this.audit('announcement.create', 'announcement', item.id, item.department_id, `نشر إعلان: ${title}`)
+    }
+    this.persist()
+  }
+
+  async deleteAnnouncement(id: string): Promise<void> {
+    await wait()
+    const me = this.me()
+    const a = this.db.announcements.find((x) => x.id === id) ?? fail('الإعلان غير موجود')
+    if (!this.canEditAnnouncement(me, a)) fail('ليست لديك صلاحية حذف هذا الإعلان.')
+    this.db.announcements = this.db.announcements.filter((x) => x.id !== id)
+    this.audit('announcement.delete', 'announcement', id, a.department_id, `حذف إعلان: ${a.title}`)
     this.persist()
   }
 

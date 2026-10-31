@@ -10,15 +10,22 @@ import type { ClassKey, Subject, SubjectInput, Term } from '../lib/types'
 import { errorText, useToast } from './feedback'
 import { Button, Callout, Checkbox, Field, Input, Modal, Segmented, Select, cx } from './ui'
 
-type Preset = 'practical' | 'theory' | 'custom'
+type Preset = 'practical' | 'theory' | 'ministerial' | 'custom'
 
 const PRESETS: Record<Exclude<Preset, 'custom'>, { coursework_max: number; cw_practical_max: number; practical_max: number }> = {
   practical: { coursework_max: 40, cw_practical_max: 15, practical_max: 25 },
   theory: { coursework_max: 30, cw_practical_max: 0, practical_max: 0 },
+  // المادة التقويمية (الوزارية): سعي 40 من القسم والكلية + امتحان نهائي وزاري 60
+  ministerial: { coursework_max: 40, cw_practical_max: 0, practical_max: 0 },
 }
 
-function presetOf(s: { coursework_max: number; cw_practical_max: number; practical_max: number }): Preset {
+/** الحد الأدنى الافتراضي للامتحان الوزاري: نصف درجة الامتحان النهائي (30 من 60) */
+const defaultFinalMin = (coursework: number, practical: number) => round2((100 - coursework - practical) / 2)
+
+function presetOf(s: { coursework_max: number; cw_practical_max: number; practical_max: number; ministerial?: boolean }): Preset {
+  if (s.ministerial) return s.coursework_max === 40 && s.cw_practical_max === 0 && s.practical_max === 0 ? 'ministerial' : 'custom'
   for (const [k, v] of Object.entries(PRESETS)) {
+    if (k === 'ministerial') continue
     if (v.coursework_max === s.coursework_max && v.cw_practical_max === s.cw_practical_max && v.practical_max === s.practical_max) return k as Preset
   }
   return 'custom'
@@ -51,7 +58,7 @@ export function SubjectDialog({
   const [err, setErr] = useState<string | null>(null)
 
   function blank(): SubjectInput {
-    return { ...classKey, term, name: '', code: null, units: null, teacher_ids: [], ...PRESETS.practical, sort: nextSort }
+    return { ...classKey, term, name: '', code: null, units: null, teacher_ids: [], ...PRESETS.practical, sort: nextSort, ministerial: false, final_min: null }
   }
 
   useEffect(() => {
@@ -72,6 +79,8 @@ export function SubjectDialog({
           cw_practical_max: subject.cw_practical_max,
           practical_max: subject.practical_max,
           sort: subject.sort,
+          ministerial: subject.ministerial,
+          final_min: subject.final_min,
         }
       : blank()
     setForm(f)
@@ -100,8 +109,10 @@ export function SubjectDialog({
   const applyPreset = (p: Preset) => {
     setPreset(p)
     if (p !== 'custom') {
-      setForm((f) => ({ ...f, ...PRESETS[p] }))
-      setSplit(PRESETS[p].cw_practical_max > 0)
+      const v = PRESETS[p]
+      const ministerial = p === 'ministerial'
+      setForm((f) => ({ ...f, ...v, ministerial, final_min: ministerial ? defaultFinalMin(v.coursework_max, v.practical_max) : null }))
+      setSplit(v.cw_practical_max > 0)
     }
   }
 
@@ -111,6 +122,8 @@ export function SubjectDialog({
     if (nums.some((n) => Number.isNaN(n) || n < 0)) return 'قيم توزيع الدرجات غير صالحة'
     if (form.coursework_max + form.practical_max > 100) return 'مجموع السعي والعملي يتجاوز 100'
     if (split && (form.cw_practical_max <= 0 || form.cw_practical_max >= form.coursework_max)) return 'جزء العملي من السعي يجب أن يكون أكبر من صفر وأقل من درجة السعي'
+    if (form.ministerial && (form.final_min == null || Number.isNaN(form.final_min) || form.final_min < 0 || form.final_min > 100 - form.coursework_max))
+      return `الحد الأدنى للامتحان النهائي يجب أن يكون بين 0 و ${100 - form.coursework_max}`
     return null
   }
 
@@ -120,7 +133,12 @@ export function SubjectDialog({
     setBusy(true)
     setErr(null)
     try {
-      await backend.saveSubject({ ...form, name: form.name.trim(), cw_practical_max: split ? form.cw_practical_max : 0 })
+      await backend.saveSubject({
+        ...form,
+        name: form.name.trim(),
+        cw_practical_max: split ? form.cw_practical_max : 0,
+        final_min: form.ministerial ? form.final_min : null,
+      })
       toast.success(subject ? 'تم تحديث المادة' : 'تمت إضافة المادة')
       onSaved()
       onClose()
@@ -182,6 +200,7 @@ export function SubjectDialog({
               options={[
                 { value: 'practical', label: 'نظري + عملي' },
                 { value: 'theory', label: 'نظري فقط' },
+                { value: 'ministerial', label: 'تقويمية (وزارية)' },
                 { value: 'custom', label: 'مخصص' },
               ]}
             />
@@ -219,6 +238,28 @@ export function SubjectDialog({
           <p className="mt-3 text-xs text-muted">
             الدرجة النهائية = السعي ({form.coursework_max}) {form.practical_max > 0 && <>+ العملي النهائي ({form.practical_max}) </>}+ الامتحان النهائي ({final})
           </p>
+          <div className="mt-4 rounded-lg border border-gold/40 bg-gold-soft/40 p-3">
+            <Checkbox
+              checked={form.ministerial}
+              onChange={(v) => {
+                setPreset(presetOf({ ...form, ministerial: v }))
+                setForm((f) => ({ ...f, ministerial: v, final_min: v ? (f.final_min ?? defaultFinalMin(f.coursework_max, f.practical_max)) : null }))
+              }}
+              label="مادة تقويمية (وزارية) — الامتحان النهائي وزاري"
+            />
+            {form.ministerial && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                <span>يُشترط للنجاح الحصول على</span>
+                <div className="w-20">{numInput(form.final_min ?? NaN, (n) => set('final_min', Number.isNaN(n) ? null : n))}</div>
+                <span>
+                  من {final} في الامتحان النهائي على الأقل، إضافة إلى بلوغ المجموع درجة النجاح ({s.settings.pass_mark}).
+                </span>
+                <p className="w-full text-xs text-muted">
+                  مثال: سعي 35 + امتحان نهائي 29 = 64، لكن الطالب راسب لأن درجة الامتحان النهائي أقل من {form.final_min ?? '—'}.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <Field label={`التدريسي / التدريسيون (${form.teacher_ids.length})`} hint="يرى التدريسي المادة ويُدخل درجاتها فقط بعد إسنادها إليه. يمكن إسناد أكثر من تدريسي.">

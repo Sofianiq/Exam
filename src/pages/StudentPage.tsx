@@ -107,8 +107,6 @@ export function StudentPage() {
 }
 
 function SectionDetails({ section }: { section: ReportSection }) {
-  const s = useSession()
-  const pass = s.settings.pass_mark
   const anyR2 = section.items.some((x) => x.result.complete && x.result.needsR2)
   return (
     <Card>
@@ -138,14 +136,14 @@ function SectionDetails({ section }: { section: ReportSection }) {
                 <td className="text-center tabular-nums text-muted">{subject.units ?? '—'}</td>
                 <td className="text-center tabular-nums">{fmtNum(r.coursework)}</td>
                 <td className="text-center tabular-nums">{r.special ? <span className="text-warning">{SPECIAL_LABEL[r.special]}</span> : fmtNum(r.finalSum)}</td>
-                <td className={cx('text-center font-semibold tabular-nums', r.total != null && r.total < pass && 'text-danger')}>{fmtNum(r.total)}</td>
+                <td className={cx('text-center font-semibold tabular-nums', r.total != null && r.passed === false && 'text-danger')}>{fmtNum(r.total)}</td>
                 {anyR2 && (
                   <td className="text-center tabular-nums">
                     {r.complete && r.needsR2 ? (
                       r.r2Special ? (
                         <span className="text-warning">{SPECIAL_LABEL[r.r2Special]}</span>
                       ) : r.r2Total != null ? (
-                        <span className={cx('font-semibold', r.r2Total < pass ? 'text-danger' : 'text-success')}>
+                        <span className={cx('font-semibold', r.finalPassed === false ? 'text-danger' : 'text-success')}>
                           {fmtNum(r.r2FinalSum)} ← {fmtNum(r.r2Total)}
                         </span>
                       ) : (

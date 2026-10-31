@@ -36,8 +36,7 @@ export function buildClassResults(subjects: Subject[], students: Student[], grad
   active.forEach((r, i) => (r.rank = ranks[i]))
   const subjectStats = subs.map((_, j) =>
     sheetStats(
-      active.map((r) => ({ ...r.results[j], total: r.results[j].finalTotal })),
-      settings.pass_mark,
+      active.map((r) => ({ ...r.results[j], total: r.results[j].finalTotal, passed: r.results[j].finalPassed })),
     ),
   )
   return { subjects: subs, rows, subjectStats }

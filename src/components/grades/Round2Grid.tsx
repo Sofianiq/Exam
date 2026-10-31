@@ -15,7 +15,6 @@ export function Round2Grid({
   drafts,
   parsed,
   readOnly,
-  passMark,
   onChange,
   onPasteRows,
 }: {
@@ -25,7 +24,6 @@ export function Round2Grid({
   drafts: Record<string, DraftRow>
   parsed: Record<string, ParsedRow>
   readOnly: boolean
-  passMark: number
   onChange: (studentId: string, patch: Partial<DraftRow>) => void
   onPasteRows?: (count: number) => void
 }) {
@@ -120,7 +118,7 @@ export function Round2Grid({
           const d = drafts[st.id]
           const p = parsed[st.id]
           const res = p?.result
-          const fail = res?.r2Total != null && res.r2Total < passMark
+          const fail = res?.r2Total != null && res.finalPassed === false
           return (
             <tr key={st.id}>
               <td className="sticky-col start-0 px-2 text-center text-xs tabular-nums text-muted">{numberOf.get(st.id)}</td>

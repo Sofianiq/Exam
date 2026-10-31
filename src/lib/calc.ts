@@ -1,6 +1,6 @@
 import type { GradeBand, GradeComponent, GradeValues, R2Component, Rounding, Settings, SpecialCode, Subject } from './types'
 
-export type Scheme = Pick<Subject, 'coursework_max' | 'cw_practical_max' | 'practical_max' | 'final_max'>
+export type Scheme = Pick<Subject, 'coursework_max' | 'cw_practical_max' | 'practical_max' | 'final_max'> & Partial<Pick<Subject, 'final_min'>>
 
 export interface ComponentDef {
   key: GradeComponent
@@ -33,11 +33,15 @@ export function componentsOf(s: Scheme): ComponentDef[] {
   return out
 }
 
-/** توزيع الدرجة المقترح من الخطة الدراسية: مادة فيها ساعات عملية ← 40/25/35، وإلا ← نظري فقط 30/70 */
-export function schemeForPlan(c: { practical_hours: number }) {
+/**
+ * توزيع الدرجة المقترح من الخطة الدراسية: المادة التقويمية (الوزارية) ← 40/60 بشرط 30 من 60 في الامتحان النهائي،
+ * مادة فيها ساعات عملية ← 40/25/35، وإلا ← نظري فقط 30/70
+ */
+export function schemeForPlan(c: { practical_hours: number; ministerial?: boolean }) {
+  if (c.ministerial) return { coursework_max: 40, cw_practical_max: 0, practical_max: 0, ministerial: true, final_min: 30, label: 'تقويمية (وزارية) — 40/60' }
   return c.practical_hours > 0
-    ? { coursework_max: 40, cw_practical_max: 15, practical_max: 25, label: 'نظري وعملي — 40/25/35' }
-    : { coursework_max: 30, cw_practical_max: 0, practical_max: 0, label: 'نظري فقط — 30/70' }
+    ? { coursework_max: 40, cw_practical_max: 15, practical_max: 25, ministerial: false, final_min: null, label: 'نظري وعملي — 40/25/35' }
+    : { coursework_max: 30, cw_practical_max: 0, practical_max: 0, ministerial: false, final_min: null, label: 'نظري فقط — 30/70' }
 }
 
 export const finalMaxOf = (coursework: number, practical: number) => round2(100 - coursework - practical)
@@ -60,6 +64,12 @@ export function gradeLabel(total: number | null, scale: GradeBand[]): string | n
   return sorted[sorted.length - 1]?.label ?? null
 }
 
+/** أدنى تقدير في الجدول (يُعطى للراسب) */
+export function lowestLabel(scale: GradeBand[]): string | null {
+  const sorted = [...scale].sort((a, b) => a.min - b.min)
+  return sorted[0]?.label ?? null
+}
+
 /** مكوّن الدور الثاني المقابل لكل مكوّن من الامتحان النهائي */
 export const R2_OF: Partial<Record<GradeComponent, R2Component>> = {
   final_practical: 'r2_final_practical',
@@ -76,6 +86,8 @@ export interface RowResult {
   special: SpecialCode | null
   label: string | null
   passed: boolean | null
+  /** رسوب بسبب عدم بلوغ الحد الأدنى لدرجة الامتحان النهائي (المواد التقويمية) رغم أن المجموع ≥ درجة النجاح */
+  belowFinalMin: boolean
   /** الطالب غير ناجح في الدور الأول (رسوب أو حالة خاصة) فيحق له الدور الثاني */
   needsR2: boolean
   r2FinalSum: number | null
@@ -88,6 +100,7 @@ export interface RowResult {
   finalSpecial: SpecialCode | null
   finalLabel: string | null
   finalPassed: boolean | null
+  finalBelowMin: boolean
 }
 
 type CalcSettings = Pick<Settings, 'pass_mark' | 'rounding' | 'grade_scale'> & Partial<Pick<Settings, 'second_round_cap'>>
@@ -111,10 +124,15 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
   if (special == null && missing.length === 0 && coursework != null && finalSum != null) {
     total = applyRounding(coursework + finalSum, settings.rounding)
   }
-  const passed = total != null ? total >= settings.pass_mark : special != null ? false : null
+  // المادة التقويمية (الوزارية): يُشترط بلوغ الحد الأدنى في الامتحان النهائي إضافة إلى درجة النجاح
+  const minOk = (fin: number | null) => subject.final_min == null || (fin ?? 0) >= subject.final_min
+  const belowFinalMin = total != null && total >= settings.pass_mark && !minOk(finalSum)
+  const passed = total != null ? total >= settings.pass_mark && !belowFinalMin : special != null ? false : null
+  const failLabel = lowestLabel(settings.grade_scale)
+  const labelOf = (t: number | null, ok: boolean | null) => (t == null ? null : ok === false && t >= settings.pass_mark ? failLabel : gradeLabel(t, settings.grade_scale))
 
   // الدور الثاني: السعي ثابت ويُعاد الامتحان النهائي فقط
-  const needsR2 = special != null || (total != null && total < settings.pass_mark)
+  const needsR2 = special != null || (total != null && !passed)
   const r2Special = v?.r2_special ?? null
   const r2FinalSum = sumGroup('final', 2)
   const hasR2Values = comps.some((c) => c.group === 'final' && val(R2_OF[c.key] as R2Component) != null)
@@ -127,6 +145,9 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
   const useR2 = needsR2 && r2Complete
   const finalTotal = useR2 ? r2Total : total
   const finalSpecial = useR2 ? r2Special : special
+  const r2BelowMin = r2Total != null && r2Total >= settings.pass_mark && !minOk(r2FinalSum)
+  const finalBelowMin = useR2 ? r2BelowMin : belowFinalMin
+  const finalPassed = finalTotal != null ? finalTotal >= settings.pass_mark && !finalBelowMin : finalSpecial != null ? false : null
   return {
     coursework: comps.some((c) => c.group === 'coursework') ? coursework : null,
     finalSum: comps.some((c) => c.group === 'final') ? finalSum : null,
@@ -134,8 +155,9 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
     complete,
     missing: special != null ? [] : missing,
     special,
-    label: total != null ? gradeLabel(total, settings.grade_scale) : null,
+    label: labelOf(total, passed),
     passed,
+    belowFinalMin,
     needsR2,
     r2FinalSum: hasR2Values ? r2FinalSum : null,
     r2Total,
@@ -144,8 +166,9 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
     finalTotal,
     finalRound: useR2 ? 2 : 1,
     finalSpecial,
-    finalLabel: finalTotal != null ? gradeLabel(finalTotal, settings.grade_scale) : null,
-    finalPassed: finalTotal != null ? finalTotal >= settings.pass_mark : finalSpecial != null ? false : null,
+    finalLabel: labelOf(finalTotal, finalPassed),
+    finalPassed,
+    finalBelowMin,
   }
 }
 
@@ -162,9 +185,9 @@ export interface SheetStats {
   passRate: number | null
 }
 
-export function sheetStats(results: RowResult[], passMark: number): SheetStats {
+export function sheetStats(results: RowResult[]): SheetStats {
   const totals = results.map((r) => r.total).filter((t): t is number => t != null)
-  const pass = totals.filter((t) => t >= passMark).length
+  const pass = results.filter((r) => r.total != null && r.passed).length
   return {
     count: results.length,
     complete: results.filter((r) => r.complete).length,
