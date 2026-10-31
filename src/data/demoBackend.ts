@@ -14,8 +14,11 @@ import {
   gradeEditBlockR2,
   isSuper,
   gradesHiddenFor,
+  belongsTo,
 } from '../lib/perm'
 import type {
+  VerifiedResult,
+  VerifiedSubject,
   Announcement,
   AnnouncementInput,
   AcademicYear,
@@ -40,7 +43,7 @@ import type {
   Term,
 } from '../lib/types'
 import { AppError, type Backend, type StudentPatch, type SubjectFilter } from './backend'
-import { createDemoDB, DEMO_VERSION, demoId, type DemoDB, type DemoProfile } from './demoSeed'
+import { createDemoDB, DEMO_VERSION, demoId, demoVerifyCode, type DemoDB, type DemoProfile } from './demoSeed'
 
 const KEY = 'exam.demo.db'
 const clone = <T,>(v: T): T => structuredClone(v)
@@ -332,6 +335,7 @@ export class DemoBackend implements Backend {
       title: a.title?.trim() || null,
       role: a.role,
       department_id: dept,
+      extra_department_ids: [],
       active: true,
       must_change_password: true,
       created_at: new Date().toISOString(),
@@ -354,9 +358,92 @@ export class DemoBackend implements Backend {
       fail('لا يمكن إلغاء آخر حساب مدير نظام')
     }
     const old = this.strip(target)
-    Object.assign(target, { full_name: a.full_name.trim().replace(/\s+/g, ' '), title: a.title?.trim() || null, role: a.role, department_id: dept, active: a.active })
+    Object.assign(target, {
+      full_name: a.full_name.trim().replace(/\s+/g, ' '),
+      title: a.title?.trim() || null,
+      role: a.role,
+      department_id: dept,
+      active: a.active,
+      extra_department_ids: a.role === 'teacher' ? target.extra_department_ids.filter((d) => d !== dept) : [],
+    })
     this.audit('user.update', 'profile', target.id, dept ?? old.department_id, `تعديل حساب: ${old.full_name}`, { old, new: a })
     this.persist()
+  }
+
+  async setTeacherDepartments(userId: string, departmentIds: string[]): Promise<void> {
+    await wait()
+    const me = this.me()
+    const t = this.db.profiles.find((p) => p.id === userId) ?? fail('الحساب غير موجود')
+    if (t.role !== 'teacher') fail('ربط الأقسام متاح لحسابات التدريسيين فقط')
+    const next = [...new Set(departmentIds)].filter((d) => d !== t.department_id && this.db.departments.some((x) => x.id === d)).sort()
+    const changed = [...next.filter((d) => !t.extra_department_ids.includes(d)), ...t.extra_department_ids.filter((d) => !next.includes(d))]
+    if (!isSuper(me) && (me.role !== 'head' || !me.department_id || changed.some((d) => d !== me.department_id))) {
+      fail('ليست لديك صلاحية على أقسام هذا التدريسي')
+    }
+    if (changed.length === 0) return
+    const old = [...t.extra_department_ids]
+    t.extra_department_ids = next
+    this.audit('user.departments', 'profile', t.id, me.department_id ?? t.department_id, `تعديل الأقسام التي يدرّس فيها: ${t.full_name}`, { old, new: next })
+    this.persist()
+  }
+
+  /** التحقق العام من النتيجة (بدون تسجيل دخول) — نفس منطق verify_result في قاعدة البيانات */
+  async verifyResult(code: string): Promise<VerifiedResult | null> {
+    await wait(20)
+    const c = code.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
+    if (c.length < 12) return null
+    const st = this.db.students.find((x) => x.verify_code === c)
+    if (!st) return null
+    const dept = this.db.departments.find((d) => d.id === st.department_id)
+    const set = this.db.settings
+    const subjects = this.db.subjects
+      .filter((s) => sameClass(s, st))
+      .sort((a, b) => a.term - b.term || a.sort - b.sort || a.name.localeCompare(b.name, 'ar'))
+      .map<VerifiedSubject>((s) => {
+        const r = computeRow(s, this.db.grades.find((g) => g.subject_id === s.id && g.student_id === st.id), set)
+        const ok = s.status === 'approved'
+        const ok2 = ok && s.r2_status === 'approved'
+        // نتيجة الدور الثاني هي النتيجة النهائية متى اكتمل (الدور الثاني لا يُدخل إلا للراسبين)
+        const r2Passed = r.r2Total != null && r.needsR2 && r.r2Complete ? r.finalPassed : null
+        return {
+          name: s.name,
+          term: s.term,
+          units: s.units,
+          ministerial: s.ministerial,
+          approved: ok,
+          special: ok ? r.special : null,
+          total: ok ? r.total : null,
+          passed: ok && r.total != null ? r.passed : null,
+          r2_approved: ok2,
+          r2_special: ok2 ? r.r2Special : null,
+          r2_total: ok2 ? r.r2Total : null,
+          r2_passed: ok2 ? r2Passed : null,
+        }
+      })
+    return {
+      code: st.verify_code,
+      student: { full_name: st.full_name, stage: st.stage, shift: st.shift, status: st.status, seq: st.seq },
+      department: dept ? { name: dept.name, head_name: dept.head_name ?? null } : null,
+      year: this.db.years.find((y) => y.id === st.year_id)?.label ?? null,
+      settings: {
+        university_name: set.university_name,
+        college_name: set.college_name,
+        pass_mark: set.pass_mark,
+        grade_scale: set.grade_scale,
+        average_mode: set.average_mode,
+        max_failed_subjects: set.max_failed_subjects,
+      },
+      subjects,
+    }
+  }
+
+  /** كما في قاعدة البيانات: إسناد مادة لتدريسي من قسم آخر يربطه بقسم المادة */
+  private linkTeachers(s: Pick<Subject, 'teacher_ids' | 'department_id'>) {
+    for (const p of this.db.profiles) {
+      if (s.teacher_ids.includes(p.id) && p.role === 'teacher' && p.department_id !== s.department_id && !p.extra_department_ids.includes(s.department_id)) {
+        p.extra_department_ids = [...p.extra_department_ids, s.department_id]
+      }
+    }
   }
 
   async resetPassword(userId: string, password: string): Promise<void> {
@@ -428,7 +515,7 @@ export class DemoBackend implements Backend {
         continue
       }
       existing.add(name)
-      this.db.students.push({ id: demoId('st'), ...k, seq: ++seq, full_name: name, status: 'active', notes: null })
+      this.db.students.push({ id: demoId('st'), ...k, seq: ++seq, full_name: name, status: 'active', notes: null, verify_code: demoVerifyCode() })
       added++
     }
     if (added) {
@@ -547,6 +634,7 @@ export class DemoBackend implements Backend {
       }
       const old = clone(cur)
       Object.assign(cur, next)
+      this.linkTeachers(cur)
       this.audit('subject.update', 'subject', cur.id, cur.department_id, cur.name, { old, new: clone(cur) })
       this.persist()
       return clone(cur)
@@ -567,6 +655,7 @@ export class DemoBackend implements Backend {
       r2_reviewed_by: null,
     }
     this.db.subjects.push(s)
+    this.linkTeachers(s)
     this.audit('subject.create', 'subject', s.id, s.department_id, s.name)
     this.persist()
     return clone(s)
@@ -612,6 +701,7 @@ export class DemoBackend implements Backend {
         r2_reviewed_by: null,
       }
       this.db.subjects.push(c)
+      this.linkTeachers(c)
       this.audit('subject.create', 'subject', c.id, c.department_id, c.name)
       n++
     }
@@ -838,7 +928,7 @@ export class DemoBackend implements Backend {
     if (a.expires_at && new Date(a.expires_at) <= new Date()) return false
     const dept =
       a.department_id == null ||
-      a.department_id === p.department_id ||
+      belongsTo(p, a.department_id) ||
       this.db.subjects.some((s) => s.department_id === a.department_id && s.teacher_ids.includes(p.id))
     const who = a.audience === 'all' || (a.audience === 'teachers' && (p.role === 'teacher' || p.role === 'head')) || (a.audience === 'heads' && p.role === 'head')
     return dept && who

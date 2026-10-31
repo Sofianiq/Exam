@@ -1,15 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Copy, FileSpreadsheet, KeyRound, Pencil, Printer, RefreshCw, Search, Trash2, UserCheck, UserPlus, Users, UserX } from 'lucide-react'
+import { Copy, FileSpreadsheet, KeyRound, Link2, Pencil, Printer, RefreshCw, Search, Trash2, Unlink, UserCheck, UserPlus, Users, UserX } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useSession } from '../app/session'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, Callout, Card, EmptyState, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, cx } from '../components/ui'
+import { Badge, Button, Callout, Card, Checkbox, EmptyState, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, cx } from '../components/ui'
 import { backend, isDemo } from '../data'
 import { displayName, fmtDate } from '../lib/format'
 import { ROLE_LABEL, ROLE_ORDER, TITLES } from '../lib/labels'
 import { normalizeArabic, parseNameList } from '../lib/parse'
 import { USERNAME_RE, generatePassword, suggestUsername } from '../lib/password'
-import { canDeleteUser, canManageUser, canManageUsers, manageableRoles } from '../lib/perm'
+import { belongsTo, canDeleteUser, canManageUser, canManageUsers, isSuper, manageableRoles } from '../lib/perm'
 import type { Profile, Role } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
@@ -33,12 +33,15 @@ export function UsersPage() {
   const [bulkOpen, setBulkOpen] = useState(false)
   const [edit, setEdit] = useState<Profile | null>(null)
   const [creds, setCreds] = useState<Credential[] | null>(null)
+  const [linkOpen, setLinkOpen] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['profiles'] })
+  const isHead = s.profile.role === 'head'
+  const myDept = s.profile.department_id
 
   const list = useMemo(() => {
     const t = normalizeArabic(q)
     return s.profiles
-      .filter((p) => (!role || p.role === role) && (!dept || p.department_id === dept))
+      .filter((p) => (!role || p.role === role) && (!dept || belongsTo(p, dept)))
       .filter((p) => !t || normalizeArabic(`${p.full_name} ${p.username}`).includes(t))
       .sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role) || a.full_name.localeCompare(b.full_name, 'ar'))
   }, [s.profiles, q, role, dept])
@@ -76,6 +79,27 @@ export function UsersPage() {
     }
   }
 
+  // مقرر القسم يلغي ربط تدريسي من قسم آخر بقسمه (لا يحذف حسابه)
+  const unlink = async (p: Profile, deptId: string) => {
+    const ok = await confirm({
+      title: 'إلغاء ربط التدريسي بالقسم',
+      message: (
+        <>
+          إلغاء ربط <b>{displayName(p)}</b> بقسم {deptName(deptId)}؟ لا يُحذف حسابه، ويبقى مسنداً إلى المواد المسندة إليه حتى تغييرها.
+        </>
+      ),
+      confirmText: 'إلغاء الربط',
+    })
+    if (!ok) return
+    try {
+      await backend.setTeacherDepartments(p.id, p.extra_department_ids.filter((d) => d !== deptId))
+      toast.success('تم إلغاء الربط')
+      void refresh()
+    } catch (e) {
+      toast.error(e)
+    }
+  }
+
   const remove = async (p: Profile) => {
     const ok = await confirm({
       title: 'حذف الحساب نهائياً',
@@ -103,6 +127,11 @@ export function UsersPage() {
           subtitle="إنشاء حسابات التدريسيين ومقرري الأقسام واللجنة الامتحانية وتوليد كلمات المرور"
           actions={
             <>
+              {(isHead || isSuper(s.profile)) && (
+                <Button icon={<Link2 className="size-4" />} onClick={() => setLinkOpen(true)}>
+                  ربط تدريسي من قسم آخر
+                </Button>
+              )}
               <Button icon={<Users className="size-4" />} onClick={() => setBulkOpen(true)}>
                 إنشاء حسابات جماعية
               </Button>
@@ -167,7 +196,20 @@ export function UsersPage() {
                         <td>
                           <Badge tone={p.role === 'teacher' ? 'neutral' : p.role === 'head' ? 'primary' : 'gold'}>{ROLE_LABEL[p.role]}</Badge>
                         </td>
-                        <td className="text-sm">{deptName(p.department_id) || '—'}</td>
+                        <td className="text-sm">
+                          {deptName(p.department_id) || '—'}
+                          {p.extra_department_ids.some((d) => s.deptById(d)) && (
+                            <span className="mt-1 flex flex-wrap gap-1">
+                              {p.extra_department_ids
+                                .filter((d) => s.deptById(d))
+                                .map((d) => (
+                                  <Badge key={d} tone="info" icon={<Link2 className="size-3" />}>
+                                    {deptName(d)}
+                                  </Badge>
+                                ))}
+                            </span>
+                          )}
+                        </td>
                         <td>
                           {!p.active ? (
                             <Badge tone="danger">موقوف</Badge>
@@ -179,6 +221,13 @@ export function UsersPage() {
                         </td>
                         <td className="text-xs tabular-nums text-muted">{fmtDate(p.created_at)}</td>
                         <td>
+                          {!can && isHead && myDept && p.role === 'teacher' && p.extra_department_ids.includes(myDept) && (
+                            <div className="flex justify-end">
+                              <IconButton label="إلغاء الربط بالقسم" onClick={() => void unlink(p, myDept)}>
+                                <Unlink className="size-4" />
+                              </IconButton>
+                            </div>
+                          )}
                           {can && (
                             <div className="flex justify-end">
                               <IconButton label="تعديل" onClick={() => setEdit(p)}>
@@ -230,7 +279,85 @@ export function UsersPage() {
         }}
       />
       <CredentialsDialog creds={creds} onClose={() => setCreds(null)} />
+      {linkOpen && <LinkTeacherDialog onClose={() => setLinkOpen(false)} onDone={() => void refresh()} defaultDept={dept || myDept || ''} />}
     </div>
+  )
+}
+
+/** ربط تدريسي موجود (من قسم آخر) بقسم ليُسند إليه مواد القسم ويظهر ضمن تدريسييه */
+function LinkTeacherDialog({ onClose, onDone, defaultDept }: { onClose: () => void; onDone: () => void; defaultDept: string }) {
+  const s = useSession()
+  const toast = useToast()
+  const isHead = s.profile.role === 'head'
+  const [dept, setDept] = useState(isHead ? (s.profile.department_id ?? '') : defaultDept || (s.departments[0]?.id ?? ''))
+  const [q, setQ] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const list = useMemo(() => {
+    const t = normalizeArabic(q)
+    return s.profiles
+      .filter((p) => p.active && p.role === 'teacher' && !belongsTo(p, dept))
+      .filter((p) => !t || normalizeArabic(`${p.full_name} ${p.username}`).includes(t))
+      .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ar'))
+  }, [s.profiles, q, dept])
+
+  const link = async (p: Profile) => {
+    setBusy(p.id)
+    try {
+      await backend.setTeacherDepartments(p.id, [...p.extra_department_ids, dept])
+      toast.success(`تم ربط ${displayName(p)} بقسم ${s.deptById(dept)?.name ?? ''}`)
+      onDone()
+    } catch (e) {
+      toast.error(e)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} size="lg" title="ربط تدريسي من قسم آخر" footer={<Button onClick={onClose}>إغلاق</Button>}>
+      <div className="space-y-4">
+        <Callout tone="info">
+          التدريسي الذي يدرّس في أكثر من قسم يبقى بحساب واحد. بعد ربطه يظهر ضمن تدريسيي القسم، ويمكن إسناد مواد القسم إليه، وتصله إعلانات القسم، وتظهر له
+          أقسامه وموادّه في قائمته الجانبية. (إسناد مادة إليه يربطه بقسمها تلقائياً أيضاً.)
+        </Callout>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="القسم">
+            <Select value={dept} disabled={isHead} onChange={(e) => setDept(e.target.value)}>
+              {s.departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="بحث">
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="اسم التدريسي أو اسم المستخدم" />
+          </Field>
+        </div>
+        <div className="max-h-80 overflow-y-auto rounded-lg border border-line">
+          {list.length === 0 ? (
+            <p className="p-6 text-center text-sm text-muted">لا يوجد تدريسيون آخرون مطابقون.</p>
+          ) : (
+            <ul className="divide-y divide-line">
+              {list.map((p) => (
+                <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                  <div>
+                    <div className="font-medium">{displayName(p)}</div>
+                    <div className="text-xs text-muted">
+                      {s.deptById(p.department_id)?.name ?? 'بدون قسم'}
+                      {p.extra_department_ids.length > 0 && ` + ${p.extra_department_ids.map((d) => s.deptById(d)?.name).filter(Boolean).join('، ')}`}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="primary" icon={<Link2 className="size-4" />} loading={busy === p.id} onClick={() => void link(p)}>
+                    ربط بالقسم
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -263,9 +390,11 @@ function AccountDialog({
   const [dept, setDept] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [extras, setExtras] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const taken = useMemo(() => new Set(s.profiles.map((p) => p.username)), [s.profiles])
+  const canSetExtras = isSuper(s.profile) && role === 'teacher'
 
   const key = open ? (profile?.id ?? 'new') : null
   if (key !== loaded) {
@@ -276,12 +405,14 @@ function AccountDialog({
       setTitle(profile.title ?? '')
       setRole(profile.role)
       setDept(profile.department_id ?? '')
+      setExtras(profile.extra_department_ids)
     } else if (key) {
       const d = isHead ? (s.profile.department_id ?? '') : ''
       setFullName('')
       setTitle('')
       setRole('teacher')
       setDept(d)
+      setExtras([])
       setUsername(suggestUsername(s.deptById(d)?.code ?? 't', taken))
       setPassword(generatePassword())
     }
@@ -293,15 +424,20 @@ function AccountDialog({
     if (role === 'head' && !dept) return setErr('يجب تحديد القسم لمقرر القسم')
     setBusy(true)
     try {
+      const wanted = extras.filter((d) => d !== dept).sort()
       if (profile) {
         await backend.updateAccount({ id: profile.id, full_name: fullName, title: title || null, role, department_id: dept || null, active: profile.active })
+        if (canSetExtras && wanted.join() !== profile.extra_department_ids.filter((d) => d !== dept).sort().join()) {
+          await backend.setTeacherDepartments(profile.id, wanted)
+        }
         toast.success('تم تحديث الحساب')
         onUpdated()
       } else {
         const u = username.trim().toLowerCase()
         if (!USERNAME_RE.test(u)) throw new Error('اسم المستخدم: 3–32 حرفاً إنجليزياً صغيراً أو رقماً (يسمح بـ . _ -)')
         if (password.length < 6) throw new Error('كلمة المرور يجب أن لا تقل عن 6 أحرف')
-        await backend.createAccount({ username: u, password, full_name: fullName, title: title || null, role, department_id: dept || null })
+        const id = await backend.createAccount({ username: u, password, full_name: fullName, title: title || null, role, department_id: dept || null })
+        if (canSetExtras && wanted.length) await backend.setTeacherDepartments(id, wanted)
         onCreated({ full_name: `${title ? `${title} ` : ''}${fullName.trim()}`, role, department: s.deptById(dept)?.name ?? '', username: u, password })
       }
       onClose()
@@ -376,6 +512,22 @@ function AccountDialog({
             </Select>
           </Field>
         </div>
+        {canSetExtras && (
+          <Field label="أقسام أخرى يدرّس فيها" hint="يُربط التدريسي تلقائياً أيضاً بكل قسم تُسند إليه فيه مادة">
+            <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-lg border border-line px-3 py-2.5">
+              {s.departments
+                .filter((d) => d.id !== dept)
+                .map((d) => (
+                  <Checkbox
+                    key={d.id}
+                    checked={extras.includes(d.id)}
+                    onChange={(v) => setExtras((x) => (v ? [...x, d.id] : x.filter((y) => y !== d.id)))}
+                    label={d.name}
+                  />
+                ))}
+            </div>
+          </Field>
+        )}
         {!profile && (
           <div className="grid gap-3 rounded-xl border border-line bg-surface-2/50 p-4 sm:grid-cols-2">
             <Field label="اسم المستخدم" hint="أحرف إنجليزية صغيرة وأرقام">

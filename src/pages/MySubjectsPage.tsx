@@ -1,4 +1,4 @@
-import { BookOpen } from 'lucide-react'
+import { BookOpen, Building2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useProgress, useSubjects } from '../app/queries'
 import { useSession } from '../app/session'
@@ -39,9 +39,23 @@ export function MySubjectsPage() {
           <EmptyState icon={<BookOpen className="size-6" />} title="لا توجد مواد" />
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {list.map((x) => (
-            <SubjectCard key={x.id} subject={x} progress={pmap.get(x.id)} />
+        <div className="space-y-7">
+          {[...new Set(list.map((x) => x.department_id))].map((d) => (
+            <section key={d}>
+              {/* التدريسي قد يدرّس في أكثر من قسم: تُجمع المواد حسب القسم */}
+              <h2 className="mb-3 flex items-center gap-2 font-semibold">
+                <Building2 className="size-4.5 text-gold-text" />
+                قسم {s.deptById(d)?.name}
+                <span className="text-sm font-normal text-muted">({list.filter((x) => x.department_id === d).length})</span>
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {list
+                  .filter((x) => x.department_id === d)
+                  .map((x) => (
+                    <SubjectCard key={x.id} subject={x} progress={pmap.get(x.id)} />
+                  ))}
+              </div>
+            </section>
           ))}
         </div>
       )}

@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { computeRow, rankDescending, sheetStats, summarizeStudent, type RowResult, type SheetStats, type StudentSummary } from '../lib/calc'
-import type { ClassKey, Grade, Settings, Student, Subject, Term } from '../lib/types'
+import { computeRow, gradeLabel, lowestLabel, rankDescending, sheetStats, summarizeStudent, type RowResult, type SheetStats, type StudentSummary } from '../lib/calc'
+import type { ClassKey, Grade, Settings, Student, Subject, Term, VerifiedResult, VerifiedSubject } from '../lib/types'
 import { useGrades, useStudents, useSubjects } from './queries'
 
 export interface StudentResultRow {
@@ -76,11 +76,21 @@ export interface StudentReport {
   annual: StudentSummary
 }
 
-/** تقرير طالب واحد: كل فصل على حدة + النتيجة السنوية */
-export function buildStudentReport(subjects: Subject[], grades: Grade[], studentId: string, settings: Settings): StudentReport {
+/**
+ * الدرجات الرسمية فقط (كما تظهر في صفحة التحقق العامة): درجات الدور الأول بعد اعتماد القائمة،
+ * ودرجات الدور الثاني بعد اعتماد قائمته
+ */
+export function officialGrade(subject: Subject, grade: Grade | undefined): Grade | undefined {
+  if (!grade || subject.status !== 'approved') return undefined
+  if (subject.r2_status === 'approved') return grade
+  return { ...grade, r2_final_practical: null, r2_final_theory: null, r2_special: null }
+}
+
+/** تقرير طالب واحد: كل فصل على حدة + النتيجة السنوية. official = المعتمد فقط (للنتيجة الرسمية المطبوعة) */
+export function buildStudentReport(subjects: Subject[], grades: Grade[], studentId: string, settings: Settings, official = false): StudentReport {
   const gmap = new Map(grades.filter((g) => g.student_id === studentId).map((g) => [g.subject_id, g]))
   const items: ReportItem[] = [...subjects].sort(sortSubjects).map((subject) => {
-    const grade = gmap.get(subject.id)
+    const grade = official ? officialGrade(subject, gmap.get(subject.id)) : gmap.get(subject.id)
     return { subject, grade, result: computeRow(subject, grade, settings) }
   })
   const summarize = (list: ReportItem[]) =>
@@ -88,6 +98,67 @@ export function buildStudentReport(subjects: Subject[], grades: Grade[], student
       list.map((x) => ({ name: x.subject.name, units: x.subject.units })),
       list.map((x) => x.result),
       settings,
+    )
+  const sections = ([1, 2] as Term[])
+    .map((term) => {
+      const list = items.filter((x) => x.subject.term === term)
+      return { term, items: list, summary: summarize(list) }
+    })
+    .filter((s) => s.items.length > 0)
+  return { sections, annual: summarize(items) }
+}
+
+/** يحوّل نتيجة مادة معتمدة (من صفحة التحقق) إلى صيغة RowResult ليُحسب التقدير والحالة بنفس قواعد النظام */
+export function rowFromVerified(x: VerifiedSubject, settings: VerifiedResult['settings']): RowResult {
+  const pass = settings.pass_mark
+  const labelOf = (t: number | null, ok: boolean | null) =>
+    t == null ? null : ok === false && t >= pass ? lowestLabel(settings.grade_scale) : gradeLabel(t, settings.grade_scale)
+  const complete = x.approved && (x.special != null || x.total != null)
+  const passed = x.special != null ? false : x.total != null ? x.passed : null
+  const needsR2 = complete && (x.special != null || x.passed === false)
+  const r2Complete = x.r2_approved && (x.r2_special != null || x.r2_total != null)
+  const useR2 = needsR2 && r2Complete
+  const finalTotal = useR2 ? x.r2_total : x.total
+  const finalSpecial = useR2 ? x.r2_special : x.special
+  const finalPassed = finalTotal != null ? (useR2 ? x.r2_passed : x.passed) : finalSpecial != null ? false : null
+  return {
+    coursework: null,
+    finalSum: null,
+    total: x.total,
+    complete,
+    missing: [],
+    special: x.special,
+    label: labelOf(x.total, passed),
+    passed,
+    belowFinalMin: x.total != null && x.total >= pass && x.passed === false,
+    needsR2,
+    r2FinalSum: null,
+    r2Total: x.r2_total,
+    r2Special: x.r2_special,
+    r2Complete,
+    finalTotal,
+    finalRound: useR2 ? 2 : 1,
+    finalSpecial,
+    finalLabel: labelOf(finalTotal, finalPassed),
+    finalPassed,
+    finalBelowMin: finalTotal != null && finalTotal >= pass && finalPassed === false,
+  }
+}
+
+export interface VerifiedSection {
+  term: Term
+  items: { subject: VerifiedSubject; result: RowResult }[]
+  summary: StudentSummary
+}
+
+/** نتيجة التحقق: كل فصل على حدة + النتيجة السنوية (المواد غير المعتمدة تجعل النتيجة غير مكتملة) */
+export function buildVerifiedReport(v: VerifiedResult): { sections: VerifiedSection[]; annual: StudentSummary } {
+  const items = v.subjects.map((subject) => ({ subject, result: rowFromVerified(subject, v.settings) }))
+  const summarize = (list: typeof items) =>
+    summarizeStudent(
+      list.map((x) => ({ name: x.subject.name, units: x.subject.units })),
+      list.map((x) => x.result),
+      v.settings,
     )
   const sections = ([1, 2] as Term[])
     .map((term) => {

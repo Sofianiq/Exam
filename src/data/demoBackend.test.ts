@@ -166,11 +166,14 @@ describe('DemoBackend', () => {
     await login('cht.head')
     await expect(b.saveAnnouncement({ title: 'للكلية', body: '', level: 'info', department_id: null, audience: 'all', pinned: false, expires_at: null })).rejects.toThrow(/صلاحية/)
     await b.saveAnnouncement({ title: 'لقسم صحة المجتمع', body: '', level: 'info', department_id: 'd-cht', audience: 'teachers', pinned: false, expires_at: null })
-    await login('rad01')
+    await login('ans01')
     const titles = (await b.listAnnouncements()).map((a) => a.title)
     expect(titles).toContain('عام')
     expect(titles).not.toContain('لقسم صحة المجتمع')
     await expect(b.deleteAnnouncement((await b.listAnnouncements())[0].id)).rejects.toThrow(/صلاحية/)
+    // تدريسي الأشعة المرتبط بقسم صحة المجتمع تصله إعلانات القسم
+    await login('rad01')
+    expect((await b.listAnnouncements()).map((a) => a.title)).toContain('لقسم صحة المجتمع')
   })
 
   it('applies the ministerial (تقويمية) rule in the demo data', async () => {
@@ -178,5 +181,56 @@ describe('DemoBackend', () => {
     const subs = await b.listSubjects({ year_id: 'y-2026', department_id: 'd-cht' })
     const m = subs.find((s) => s.ministerial && s.term === 1)!
     expect(m).toMatchObject({ coursework_max: 40, practical_max: 0, final_max: 60, final_min: 30 })
+  })
+
+  it('links a teacher to several departments and lists their subjects there', async () => {
+    const me = await login('rad01')
+    const mine = await b.listSubjects({ year_id: 'y-2026', teacher_id: me.id })
+    expect(new Set(mine.map((x) => x.department_id))).toEqual(new Set(['d-rad', 'd-cht']))
+    await login('cht.head')
+    const profiles = await b.listProfiles()
+    const rad02 = profiles.find((p) => p.username === 'rad02')!
+    await b.setTeacherDepartments(rad02.id, [...rad02.extra_department_ids, 'd-cht'])
+    expect((await b.listProfiles()).find((p) => p.id === rad02.id)!.extra_department_ids).toEqual(['d-cht'])
+    // المقرر لا يربط تدريسياً بقسم آخر غير قسمه
+    await expect(b.setTeacherDepartments(rad02.id, ['d-cht', 'd-ans'])).rejects.toThrow(/صلاحية/)
+    await b.setTeacherDepartments(rad02.id, [])
+    expect((await b.listProfiles()).find((p) => p.id === rad02.id)!.extra_department_ids).toEqual([])
+  })
+
+  it('assigning a subject to a teacher from another department links them automatically', async () => {
+    await login('cht.head')
+    const rad03 = (await b.listProfiles()).find((p) => p.username === 'rad03')!
+    await b.saveSubject({
+      year_id: 'y-2026',
+      department_id: 'd-cht',
+      stage: 1,
+      shift: 'morning',
+      term: 1,
+      name: 'مادة مشتركة',
+      code: null,
+      units: 2,
+      teacher_ids: [rad03.id],
+      coursework_max: 30,
+      cw_practical_max: 0,
+      practical_max: 0,
+      sort: 1,
+      ministerial: false,
+      final_min: null,
+    })
+    expect((await b.listProfiles()).find((p) => p.id === rad03.id)!.extra_department_ids).toContain('d-cht')
+  })
+
+  it('verifies a printed result by its code without signing in, revealing approved subjects only', async () => {
+    await login('dean')
+    const st = (await b.listStudents({ year_id: 'y-2026', department_id: 'd-cht', stage: 2, shift: 'morning' }))[0]
+    await b.signOut()
+    const v = await b.verifyResult(st.verify_code.toLowerCase().replace(/(.{4})/g, '$1-'))
+    expect(v?.student.full_name).toBe(st.full_name)
+    const approved = v!.subjects.filter((x) => x.approved)
+    expect(approved.length).toBeGreaterThan(0)
+    expect(approved.every((x) => x.total != null || x.special != null)).toBe(true)
+    expect(v!.subjects.filter((x) => !x.approved).every((x) => x.total == null && x.passed == null)).toBe(true)
+    expect(await b.verifyResult('0000000000000000')).toBeNull()
   })
 })

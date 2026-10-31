@@ -1,10 +1,11 @@
 import { Search } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useSession } from '../app/session'
 import { backend } from '../data'
 import { finalMaxOf, round2 } from '../lib/calc'
 import { displayName } from '../lib/format'
 import { ROLE_LABEL, TERM_LABEL } from '../lib/labels'
+import { belongsTo } from '../lib/perm'
 import { normalizeArabic } from '../lib/parse'
 import type { ClassKey, Subject, SubjectInput, Term } from '../lib/types'
 import { errorText, useToast } from './feedback'
@@ -100,11 +101,12 @@ export function SubjectDialog({
     return list
       .filter((p) => !t || normalizeArabic(`${p.full_name} ${p.username}`).includes(t) || form.teacher_ids.includes(p.id))
       .sort((a, b) => {
-        const ad = a.department_id === classKey.department_id ? 0 : 1
-        const bd = b.department_id === classKey.department_id ? 0 : 1
+        const ad = belongsTo(a, classKey.department_id) ? 0 : 1
+        const bd = belongsTo(b, classKey.department_id) ? 0 : 1
         return ad - bd || a.full_name.localeCompare(b.full_name, 'ar')
       })
   }, [s.profiles, q, form.teacher_ids, classKey.department_id])
+  const firstOther = teachers.findIndex((p) => !belongsTo(p, classKey.department_id))
 
   const applyPreset = (p: Preset) => {
     setPreset(p)
@@ -262,7 +264,10 @@ export function SubjectDialog({
           </div>
         </div>
 
-        <Field label={`التدريسي / التدريسيون (${form.teacher_ids.length})`} hint="يرى التدريسي المادة ويُدخل درجاتها فقط بعد إسنادها إليه. يمكن إسناد أكثر من تدريسي.">
+        <Field
+          label={`التدريسي / التدريسيون (${form.teacher_ids.length})`}
+          hint="يرى التدريسي المادة ويُدخل درجاتها بعد إسنادها إليه. يمكن إسناد أكثر من تدريسي، ويمكن اختيار تدريسي من قسم آخر فيُربط بهذا القسم تلقائياً."
+        >
           <div className="rounded-lg border border-line-strong">
             <div className="relative border-b border-line">
               <Search className="pointer-events-none absolute inset-y-0 start-3 my-auto size-4 text-faint" />
@@ -270,22 +275,26 @@ export function SubjectDialog({
             </div>
             <div className="max-h-48 overflow-y-auto p-1.5">
               {teachers.length === 0 && <p className="p-3 text-center text-sm text-muted">لا يوجد تدريسيون. أضفهم من صفحة المستخدمين.</p>}
-              {teachers.map((p) => {
+              {teachers.map((p, i) => {
                 const on = form.teacher_ids.includes(p.id)
                 return (
-                  <label key={p.id} className={cx('flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm', on ? 'bg-primary-soft' : 'hover:bg-surface-2')}>
-                    <input
-                      type="checkbox"
-                      className="size-4 accent-[var(--primary)]"
-                      checked={on}
-                      onChange={(e) => set('teacher_ids', e.target.checked ? [...form.teacher_ids, p.id] : form.teacher_ids.filter((x) => x !== p.id))}
-                    />
-                    <span className="flex-1">{displayName(p)}</span>
-                    <span className="text-xs text-muted">
-                      {ROLE_LABEL[p.role]}
-                      {p.department_id && p.department_id !== classKey.department_id ? ` — ${s.deptById(p.department_id)?.name ?? ''}` : ''}
-                    </span>
-                  </label>
+                  <Fragment key={p.id}>
+                    {i === 0 && firstOther !== 0 && <div className="px-2.5 pt-1 pb-1.5 text-[0.7rem] font-semibold text-muted">تدريسيو القسم</div>}
+                    {i === firstOther && <div className="mt-1 border-t border-line px-2.5 pt-2 pb-1.5 text-[0.7rem] font-semibold text-muted">تدريسيون من أقسام أخرى</div>}
+                    <label className={cx('flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm', on ? 'bg-primary-soft' : 'hover:bg-surface-2')}>
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-[var(--primary)]"
+                        checked={on}
+                        onChange={(e) => set('teacher_ids', e.target.checked ? [...form.teacher_ids, p.id] : form.teacher_ids.filter((x) => x !== p.id))}
+                      />
+                      <span className="flex-1">{displayName(p)}</span>
+                      <span className="text-xs text-muted">
+                        {ROLE_LABEL[p.role]}
+                        {p.department_id && p.department_id !== classKey.department_id ? ` — ${s.deptById(p.department_id)?.name ?? ''}` : ''}
+                      </span>
+                    </label>
+                  </Fragment>
                 )
               })}
             </div>

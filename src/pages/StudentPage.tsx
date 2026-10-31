@@ -5,7 +5,7 @@ import { Link, useParams } from 'react-router-dom'
 import { classKeyOf, useGrades, useSubjects } from '../app/queries'
 import { buildStudentReport, type ReportSection } from '../app/results'
 import { useSession } from '../app/session'
-import { ResultCard, scopeLabel, type ResultScope } from '../components/ResultCard'
+import { ResultSheets, scopeLabel, type ResultScope, type SlipProps } from '../components/ResultSlip'
 import { Badge, Button, Card, CardHeader, LoadingBlock, PageHeader, Segmented, cx } from '../components/ui'
 import { backend } from '../data'
 import type { StudentSummary } from '../lib/calc'
@@ -13,6 +13,7 @@ import { fmtNum, unitsLabel, yearLabel } from '../lib/format'
 import { SHIFT_LABEL, SPECIAL_LABEL, STUDENT_STATUS_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { canSeeDepartment } from '../lib/perm'
 import { NotFoundPage } from './NotFoundPage'
+import { ScaledPreview } from './ResultsPage'
 
 export const STATUS_TONE = { pass: 'success', pass_r2: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
 
@@ -20,6 +21,7 @@ export function StudentPage() {
   const { studentId } = useParams()
   const s = useSession()
   const [scope, setScope] = useState<ResultScope | null>(null)
+  const [copies, setCopies] = useState<1 | 2>(2)
   const studentQ = useQuery({ queryKey: ['student', studentId], queryFn: () => backend.getStudent(studentId!), enabled: !!studentId })
   const student = studentQ.data ?? undefined
   const subjectsQ = useSubjects(student ? classKeyOf(student) : { year_id: '' }, !!student)
@@ -27,6 +29,11 @@ export function StudentPage() {
   const gradesQ = useGrades(subjects.map((x) => x.id))
   const report = useMemo(
     () => (student ? buildStudentReport(subjects, gradesQ.data ?? [], student.id, s.settings) : null),
+    [student, subjects, gradesQ.data, s.settings],
+  )
+  // النتيجة الرسمية المطبوعة: المعتمد فقط، لتطابق صفحة التحقق برمز QR
+  const official = useMemo(
+    () => (student ? buildStudentReport(subjects, gradesQ.data ?? [], student.id, s.settings, true) : null),
     [student, subjects, gradesQ.data, s.settings],
   )
 
@@ -42,6 +49,10 @@ export function StudentPage() {
   const withData = report.sections.filter((x) => x.summary.status !== 'none')
   const defaultScope: ResultScope = withData.length > 1 ? 0 : (withData[withData.length - 1]?.term ?? scopes[0]?.value ?? 1)
   const effectiveScope = scope != null && scopes.some((x) => x.value === scope) ? scope : defaultScope
+  // نسختان في الصفحة الأفقية: نسخة للطالب ونسخة لأرشيف القسم
+  const slip: SlipProps = { student, dept, yearLabel: year, settings: s.settings, report: official ?? report, scope: effectiveScope }
+  const unapproved = subjects.filter((x) => (effectiveScope === 0 || x.term === effectiveScope) && x.status !== 'approved').length
+  const slips: SlipProps[] = copies === 2 ? [{ ...slip, copy: 'نسخة الطالب' }, { ...slip, copy: 'نسخة القسم' }] : [slip]
 
   return (
     <div>
@@ -69,6 +80,15 @@ export function StudentPage() {
             scopes.length > 0 && (
               <>
                 <Segmented value={effectiveScope} onChange={setScope} options={scopes} size="sm" />
+                <Segmented<1 | 2>
+                  value={copies}
+                  onChange={setCopies}
+                  size="sm"
+                  options={[
+                    { value: 2, label: 'نسختان' },
+                    { value: 1, label: 'نسخة واحدة' },
+                  ]}
+                />
                 <Button
                   variant="primary"
                   size="sm"
@@ -96,12 +116,23 @@ export function StudentPage() {
         </div>
 
         {report.sections.length > 0 && (
-          <h2 className="mt-8 mb-3 font-semibold">
-            معاينة النتيجة للطباعة — <span className="text-gold-text">{scopeLabel(effectiveScope)}</span>
-          </h2>
+          <>
+            <h2 className="mt-8 mb-3 font-semibold">
+              معاينة النتيجة للطباعة — <span className="text-gold-text">{scopeLabel(effectiveScope)}</span>
+              <span className="ms-2 text-sm font-normal text-muted">(A4 أفقية)</span>
+            </h2>
+            {unapproved > 0 && (
+              <p className="mb-3 text-sm text-warning">
+                تتضمن النتيجة الرسمية المواد المعتمدة فقط؛ {unapproved} {unapproved === 1 ? 'مادة غير معتمدة' : 'مواد غير معتمدة'} بعد وستظهر «غير مكتملة» حتى اعتمادها.
+              </p>
+            )}
+            <ScaledPreview>
+              <ResultSheets items={slips} className="slip-preview" />
+            </ScaledPreview>
+          </>
         )}
       </div>
-      {report.sections.length > 0 && <ResultCard student={student} dept={dept} yearLabel={year} settings={s.settings} report={report} scope={effectiveScope} />}
+      {report.sections.length > 0 && <ResultSheets items={slips} className="print-only" />}
     </div>
   )
 }

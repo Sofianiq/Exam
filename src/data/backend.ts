@@ -22,6 +22,7 @@ import type {
   SubjectProgress,
   SubjectStatus,
   Term,
+  VerifiedResult,
 } from '../lib/types'
 
 export interface SubjectFilter {
@@ -85,6 +86,12 @@ export interface Backend {
   listCurriculum(departmentId: string): Promise<CurriculumItem[]>
   saveCurriculum(c: CurriculumInput): Promise<void>
   deleteCurriculum(id: string): Promise<void>
+
+  /** الأقسام الإضافية التي يدرّس فيها التدريسي (المقرر يربط قسمه أو يلغيه فقط) */
+  setTeacherDepartments(userId: string, departmentIds: string[]): Promise<void>
+
+  /** التحقق العام من نتيجة طالب برمز QR (لا يتطلب تسجيل الدخول) — null إذا كان الرمز غير صحيح */
+  verifyResult(code: string): Promise<VerifiedResult | null>
 
   // الإعلانات (تُعاد الإعلانات التي يحق للمستخدم قراءتها فقط، الأحدث أولاً)
   listAnnouncements(): Promise<Announcement[]>

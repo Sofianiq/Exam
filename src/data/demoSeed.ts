@@ -37,7 +37,7 @@ export interface DemoDB {
   sessionUserId: string | null
 }
 
-export const DEMO_VERSION = 5
+export const DEMO_VERSION = 6
 export const DEMO_PASSWORD = '123456'
 
 function mulberry32(seed: number) {
@@ -92,6 +92,13 @@ type PlanRow = [stage: number, term: Term, name: string, nameEn: string, categor
 export const PLANS = plansJson as unknown as Record<string, PlanRow[]>
 export const CHT_PLAN: PlanRow[] = PLANS.CHT
 
+/** رمز تحقق من 16 خانة سداسية عشرية (ثابت للبيانات التجريبية لأنه مشتق من المولد ذي البذرة الثابتة) */
+export function demoVerifyCode(rand: () => number = Math.random) {
+  let out = ''
+  for (let i = 0; i < 16; i++) out += '0123456789ABCDEF'[Math.floor(rand() * 16)]
+  return out
+}
+
 export function createDemoDB(): DemoDB {
   const rand = mulberry32(20262027)
   const now = new Date()
@@ -125,6 +132,8 @@ export function createDemoDB(): DemoDB {
     average_mode: 'weighted',
     idle_minutes: 60,
     hide_grades_when_closed: true,
+    dean_name: 'أ.د. خالد عبد الرحمن السامرائي',
+    committee_head_name: 'م.د. سارة نبيل العاني',
     current_year_id: 'y-2026',
     second_round_cap: null,
     max_failed_subjects: 2,
@@ -137,6 +146,7 @@ export function createDemoDB(): DemoDB {
     title,
     role,
     department_id,
+    extra_department_ids: [],
     active: true,
     must_change_password: false,
     created_at: iso(60 * 24 * 30),
@@ -152,7 +162,7 @@ export function createDemoDB(): DemoDB {
     person('u-den-h', 'den.head', 'مروة فاضل الجبوري', 'head', 'd-den', 'م.د.'),
     person('u-cht-h', 'cht.head', 'حسين كاظم الزبيدي', 'head', 'd-cht', 'م.م.'),
     person('u-cos-h', 'cos.head', 'نور الهدى صالح', 'head', 'd-cos', 'م.م.'),
-    person('u-rad1', 'rad01', 'عمار رعد الشمري', 'teacher', 'd-rad', 'م.د.'),
+    { ...person('u-rad1', 'rad01', 'عمار رعد الشمري', 'teacher', 'd-rad', 'م.د.'), extra_department_ids: ['d-cht'] },
     person('u-rad2', 'rad02', 'هدى سلمان الكبيسي', 'teacher', 'd-rad', 'م.م.'),
     person('u-rad3', 'rad03', 'ياسر خليل النعيمي', 'teacher', 'd-rad', 'م.م.'),
     person('u-rad4', 'rad04', 'رنا جبار الحديثي', 'teacher', 'd-rad', 'م.'),
@@ -195,6 +205,7 @@ export function createDemoDB(): DemoDB {
       full_name,
       status: 'active',
       notes: null,
+      verify_code: demoVerifyCode(rand),
     }))
     students.push(...cls)
     const ability = new Map(cls.map((s) => [s.id, Math.max(30, Math.min(98, 72 + (rand() + rand() + rand() - 1.5) * 30))]))
@@ -294,7 +305,8 @@ export function createDemoDB(): DemoDB {
     { name: 'اللغة العربية', term: 1, teachers: ['u-gen1'], theoryOnly: true, status: 'draft', fill: 1 },
   ])
   // قسم صحة المجتمع — المرحلة الثانية: مواد الخطة الدراسية الرسمية، الفصل الأول معتمد مع دور ثانٍ
-  const chtTeacher = (name: string) => (/اللغة|البعث|الحاسوب|حقوق/.test(name) ? ['u-gen1'] : ['u-cht1'])
+  // «إحصاء طبي حياتي» يدرّسها تدريسي من قسم الأشعة (تدريسي في أكثر من قسم)
+  const chtTeacher = (name: string) => (/اللغة|البعث|الحاسوب|حقوق/.test(name) ? ['u-gen1'] : name === 'إحصاء طبي حياتي' ? ['u-rad1'] : ['u-cht1'])
   addClass(
     'd-cht',
     2,

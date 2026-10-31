@@ -175,6 +175,16 @@ create table if not exists public.announcements (
 );
 create index if not exists announcements_created_idx on public.announcements (created_at desc);
 
+-- ترقيات الإصدار الرابع: التدريسي في أكثر من قسم، رمز التحقق من النتيجة، أسماء الموقعين على النتيجة
+alter table public.profiles add column if not exists extra_department_ids uuid[] not null default '{}';
+alter table public.settings add column if not exists dean_name text;
+alter table public.settings add column if not exists committee_head_name text;
+alter table public.students add column if not exists verify_code text;
+update public.students set verify_code = upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16)) where verify_code is null;
+alter table public.students alter column verify_code set default upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16));
+alter table public.students alter column verify_code set not null;
+create unique index if not exists students_verify_code_idx on public.students (verify_code);
+
 create table if not exists public.audit_log (
   id             bigint generated always as identity primary key,
   at             timestamptz not null default now(),
@@ -310,6 +320,7 @@ language sql stable security definer set search_path = '' as $$
       or ( (a.expires_at is null or a.expires_at > now())
        and ( a.department_id is null
           or a.department_id = public.my_department()
+          or a.department_id = any (coalesce((select p.extra_department_ids from public.profiles p where p.id = auth.uid()), '{}'))
           or exists (select 1 from public.subjects s where s.department_id = a.department_id and auth.uid() = any (s.teacher_ids)) )
        and ( a.audience = 'all'
           or (a.audience = 'teachers' and public.my_role() in ('teacher','head'))
@@ -368,6 +379,16 @@ language sql stable set search_path = '' as $$
                           + coalesce(g.r2_final_practical,0) + coalesce(g.r2_final_theory,0)),
       case when g.special = 'postponed' then 100
            else coalesce((select second_round_cap from public.settings where id = 1), 100) end)
+  end
+$$;
+
+-- هل الطالب ناجح في الدور الثاني؟ (نفس شرط المادة التقويمية على امتحان الدور الثاني)
+create or replace function public.grade_r2_passed(s public.subjects, g public.grades) returns boolean
+language sql stable set search_path = '' as $$
+  select case
+    when public.grade_r2_total(s, g) is null then null
+    else public.grade_r2_total(s, g) >= (select pass_mark from public.settings where id = 1)
+     and (s.final_min is null or coalesce(g.r2_final_practical,0) + coalesce(g.r2_final_theory,0) >= s.final_min)
   end
 $$;
 
@@ -624,6 +645,23 @@ drop trigger if exists subjects_guard on public.subjects;
 create trigger subjects_guard before insert or update or delete on public.subjects
   for each row execute function public.subjects_guard();
 
+-- إسناد مادة لتدريسي من قسم آخر يربطه بقسم المادة تلقائياً (يظهر في قائمة تدريسيي القسم وتصله إعلاناته)
+create or replace function public.subjects_link_teachers() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  update public.profiles p
+     set extra_department_ids = array_append(p.extra_department_ids, new.department_id)
+   where p.id = any (new.teacher_ids)
+     and p.role = 'teacher'
+     and p.department_id is distinct from new.department_id
+     and not (new.department_id = any (p.extra_department_ids));
+  return null;
+end $$;
+
+drop trigger if exists subjects_link_teachers on public.subjects;
+create trigger subjects_link_teachers after insert or update of teacher_ids, department_id on public.subjects
+  for each row execute function public.subjects_link_teachers();
+
 create or replace function public.subjects_audit() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -652,6 +690,7 @@ language plpgsql security definer set search_path = '' as $$
 begin
   if tg_op = 'INSERT' then
     new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
+    new.verify_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16)); -- لا يُختار يدوياً
     return new;
   end if;
   if exists (select 1 from public.grades g where g.student_id = old.id
@@ -667,6 +706,7 @@ begin
   end if;
   if tg_op = 'DELETE' then return old; end if;
   new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
+  new.verify_code := old.verify_code; -- رمز التحقق من النتيجة ثابت لا يُعدَّل
   return new;
 end $$;
 
@@ -1105,7 +1145,8 @@ begin
   update public.profiles set
     full_name = regexp_replace(trim(p_full_name), '\s+', ' ', 'g'),
     title = nullif(trim(coalesce(p_title, '')), ''),
-    role = p_role, department_id = v_dept, active = p_active
+    role = p_role, department_id = v_dept, active = p_active,
+    extra_department_ids = case when p_role = 'teacher' then array_remove(extra_department_ids, v_dept) else '{}' end
   where id = p_user_id;
   update auth.users set banned_until = case when p_active then null else now() + interval '100 years' end,
                         updated_at = now()
@@ -1114,6 +1155,78 @@ begin
     'تعديل حساب: ' || v_old.full_name,
     jsonb_build_object('old', to_jsonb(v_old), 'new', jsonb_build_object('full_name', p_full_name, 'title', p_title,
       'role', p_role, 'department_id', v_dept, 'active', p_active)));
+end $$;
+
+-- التحقق العام من نتيجة طالب برمز QR المطبوع على النتيجة (متاح دون تسجيل دخول).
+-- يُعيد نتائج المواد المعتمدة فقط، ولا يكشف أي درجة لم تعتمدها اللجنة الامتحانية.
+create or replace function public.verify_result(p_code text) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_st public.students;
+  v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^0-9A-Za-z]', '', 'g'));
+begin
+  if length(v_code) < 12 then return null; end if;
+  select * into v_st from public.students where verify_code = v_code;
+  if not found then return null; end if;
+  return jsonb_build_object(
+    'code', v_st.verify_code,
+    'student', jsonb_build_object('full_name', v_st.full_name, 'stage', v_st.stage, 'shift', v_st.shift,
+                                  'status', v_st.status, 'seq', v_st.seq),
+    'department', (select jsonb_build_object('name', d.name, 'head_name', d.head_name)
+                   from public.departments d where d.id = v_st.department_id),
+    'year', (select y.label from public.academic_years y where y.id = v_st.year_id),
+    'settings', (select jsonb_build_object('university_name', x.university_name, 'college_name', x.college_name,
+                                           'pass_mark', x.pass_mark, 'grade_scale', x.grade_scale,
+                                           'average_mode', x.average_mode, 'max_failed_subjects', x.max_failed_subjects)
+                 from public.settings x where x.id = 1),
+    'subjects', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'name', s.name, 'term', s.term, 'units', s.units, 'ministerial', s.ministerial,
+               'approved', s.status = 'approved',
+               'special', case when s.status = 'approved' then g.special end,
+               'total', case when s.status = 'approved' then public.grade_total(s, g) end,
+               'passed', case when s.status = 'approved' then public.grade_passed(s, g) end,
+               'r2_approved', s.status = 'approved' and s.r2_status = 'approved',
+               'r2_special', case when s.status = 'approved' and s.r2_status = 'approved' then g.r2_special end,
+               'r2_total', case when s.status = 'approved' and s.r2_status = 'approved' then public.grade_r2_total(s, g) end,
+               'r2_passed', case when s.status = 'approved' and s.r2_status = 'approved' then public.grade_r2_passed(s, g) end
+             ) order by s.term, s.sort, s.name)
+      from public.subjects s
+      left join public.grades g on g.subject_id = s.id and g.student_id = v_st.id
+      where s.year_id = v_st.year_id and s.department_id = v_st.department_id
+        and s.stage = v_st.stage and s.shift = v_st.shift), '[]'::jsonb)
+  );
+end $$;
+
+-- الأقسام الإضافية التي يدرّس فيها التدريسي: الإدارة تحدد أي قائمة، ومقرر القسم يربط قسمه أو يلغي ربطه فقط
+create or replace function public.set_teacher_departments(p_user_id uuid, p_department_ids uuid[]) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_p public.profiles;
+  v_new uuid[];
+  v_changed uuid[];
+  v_me uuid := public.my_department();
+begin
+  select * into v_p from public.profiles where id = p_user_id;
+  if not found then raise exception 'الحساب غير موجود'; end if;
+  if v_p.role <> 'teacher' then
+    raise exception 'ربط الأقسام متاح لحسابات التدريسيين فقط' using errcode = '22023';
+  end if;
+  v_new := array(select distinct x from unnest(coalesce(p_department_ids, '{}')) x
+                 where x is distinct from v_p.department_id and exists (select 1 from public.departments d where d.id = x)
+                 order by x);
+  v_changed := array((select x from unnest(v_new) x except select y from unnest(v_p.extra_department_ids) y)
+                     union (select y from unnest(v_p.extra_department_ids) y except select x from unnest(v_new) x));
+  if not public.is_super() and (
+       public.my_role() is distinct from 'head' or v_me is null
+       or exists (select 1 from unnest(v_changed) z where z is distinct from v_me)) then
+    raise exception 'ليست لديك صلاحية على أقسام هذا التدريسي' using errcode = '42501';
+  end if;
+  if cardinality(v_changed) = 0 then return; end if;
+  update public.profiles set extra_department_ids = v_new where id = p_user_id;
+  perform public.write_audit('user.departments', 'profile', p_user_id::text, coalesce(v_me, v_p.department_id),
+    'تعديل الأقسام التي يدرّس فيها: ' || v_p.full_name,
+    jsonb_build_object('old', v_p.extra_department_ids, 'new', v_new));
 end $$;
 
 create or replace function public.reset_password(p_user_id uuid, p_password text)
@@ -1350,6 +1463,7 @@ grant execute on function
   public.apply_rounding(numeric), public.grade_total(public.subjects, public.grades),
   public.grade_r2_total(public.subjects, public.grades),
   public.grade_passed(public.subjects, public.grades),
+  public.grade_r2_passed(public.subjects, public.grades),
   public.grades_hidden_for_me(uuid), public.can_read_announcement(public.announcements),
   public.log_client_event(text, text, jsonb),
   public.save_grades(uuid, jsonb, text),
@@ -1363,8 +1477,14 @@ grant execute on function
   public.update_account(uuid, text, text, text, uuid, boolean),
   public.reset_password(uuid, text),
   public.delete_account(uuid),
-  public.change_my_password(text, text)
+  public.change_my_password(text, text),
+  public.set_teacher_departments(uuid, uuid[]),
+  public.verify_result(text)
 to authenticated;
+
+-- صفحة التحقق من النتيجة عامة: يستطيع أي شخص يحمل رمز النتيجة التحقق منها دون حساب
+grant usage on schema public to anon;
+grant execute on function public.verify_result(text) to anon;
 
 -- ---------------------------------------------------------------------
 -- 11) البيانات الأولية
