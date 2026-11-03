@@ -366,89 +366,55 @@ update public.students set verify_code = 'AAAAAAAAAAAAAAAA' where id = :'st1';
 reset role;
 select t.ok((select verify_code from public.students where id = :'st1') = :'vc', 'verification code cannot be changed');
 
--- ===== ترحيل بيانات النظام السابق =====
-reset role;
-select format($j${
-  "year": "2024-2025", "department_id": "%s", "stage": 1, "shift": "morning", "checksum": "abc",
-  "files": [{"name": "t1.xlsx", "term": 1, "checksum": "a"}, {"name": "t2.xlsx", "term": 2, "checksum": "b"}],
-  "students": [
-    {"key": "2501", "student_no": "2501", "full_name": "طالب  أول تجريبي", "gender": "female", "seq": 1},
-    {"key": "2502", "student_no": "2502", "full_name": "طالب ثانٍ تجريبي", "gender": "male", "seq": 2}],
-  "subjects": [
-    {"key": "1:1", "term": 1, "name": "مادة علمية", "units": 3, "sort": 1, "coursework_max": 40, "r2_deduction": 10, "meta": {"teacher": "م.م تجريبي"}},
-    {"key": "1:2", "term": 1, "name": "لغة عربية", "units": 2, "sort": 2, "coursework_max": 30, "r2_deduction": 10},
-    {"key": "2:1", "term": 2, "name": "مادة الفصل الثاني", "units": 3, "sort": 1, "coursework_max": 40, "r2_deduction": 10}],
-  "grades": [
-    {"subject": "1:1", "student": "2501", "cw_theory": 18, "final_theory": 27, "decision": 5},
-    {"subject": "1:1", "student": "2502", "cw_theory": 38, "special": "banned", "r2_final_theory": 54},
-    {"subject": "1:2", "student": "2501", "cw_theory": 26, "final_theory": 65},
-    {"subject": "1:2", "student": "2502", "cw_theory": 20, "final_theory": 10, "r2_final_theory": 26, "r2_decision": 4},
-    {"subject": "2:1", "student": "2501", "cw_theory": 38, "special": "postponed", "r2_final_theory": 43},
-    {"subject": "2:1", "student": "2502", "cw_theory": 25, "final_theory": 15, "final_override": 40, "legacy": {"note": "تسوية"}}]
-}$j$, :'rad') as legacy_payload \gset
-
-:as_radhead
-select t.expect_error(format($$select public.import_legacy_class(%L::jsonb)$$, :'legacy_payload'), '%مدير النظام أو العميد%');
-:as_asst
-select t.expect_error(format($$select public.import_legacy_class(%L::jsonb)$$, :'legacy_payload'), '%مدير النظام أو العميد%');
+-- ===== بيانات النظام السابق المرحَّلة (أُزيلت أداة الترحيل وبقيت البيانات) =====
 :as_admin
-select t.expect_error(format($$select public.import_legacy_class(jsonb_set(%L::jsonb, '{grades,0,final_theory}', '61'))$$, :'legacy_payload'), '%خارج المدى%');
-select t.ok((select count(*) = 0 from public.academic_years where label = '2024-2025'), 'failed import leaves nothing behind');
-select public.import_legacy_class(:'legacy_payload'::jsonb) ->> 'status' as st \gset
-select t.ok(:'st' = 'imported', 'legacy class imported');
-select id as ly from public.academic_years where label = '2024-2025' \gset
-select t.ok((select count(*) = 3 from public.subjects where year_id = :'ly' and legacy and status = 'approved' and r2_status = 'approved'),
-            'legacy subjects approved in both rounds');
-select t.ok((select final_max = 70 from public.subjects where year_id = :'ly' and name = 'لغة عربية'), 'per-subject 30/70 distribution');
-select t.ok((select count(*) = 2 from public.students where year_id = :'ly' and student_no in ('2501','2502') and legacy_import_id is not null),
-            'students created with their university numbers');
-select t.ok((select full_name = 'طالب أول تجريبي' and gender = 'female' and seq = 1 from public.students where year_id = :'ly' and student_no = '2501'),
-            'names normalised, order kept');
-select t.ok((select count(*) = 1 from public.audit_log where action = 'legacy.import') and
-            (select count(*) = 0 from public.audit_log a join public.subjects s on s.id::text = a.entity_id where s.year_id = :'ly'),
-            'one audit entry per imported class, no per-grade entries');
--- قواعد الحساب على البيانات المرحَّلة
+select t.expect_error($$select public.import_legacy_class('{}'::jsonb)$$, '%does not exist%');
+-- محاكاة بيانات مرحَّلة كما أنشأتها أداة الترحيل سابقاً
+reset role;
+select set_config('request.jwt.claims', json_build_object('sub', :'admin_id')::text, false);
+select set_config('app.legacy_import', 'on', false);
+select set_config('app.status_rpc', 'on', false);
+insert into public.academic_years (label) values ('2024-2025') returning id as ly \gset
+insert into public.legacy_imports (year_id, department_id, stage, shift, checksum) values (:'ly', :'rad', 1, 'morning', 'x') returning id as lbatch \gset
+insert into public.students (year_id, department_id, stage, shift, seq, full_name, student_no, gender, legacy_import_id)
+values (:'ly', :'rad', 1, 'morning', 1, 'طالب أول تجريبي', '2501', 'female', :'lbatch'),
+       (:'ly', :'rad', 1, 'morning', 2, 'طالب ثانٍ تجريبي', '2502', 'male', :'lbatch');
+select id as ls1 from public.students where year_id = :'ly' and student_no = '2501' \gset
+select id as ls2 from public.students where year_id = :'ly' and student_no = '2502' \gset
+insert into public.subjects (year_id, department_id, stage, shift, term, name, units, coursework_max, cw_practical_max, practical_max,
+                             status, r2_status, legacy, r2_deduction, legacy_import_id)
+values (:'ly', :'rad', 1, 'morning', 1, 'مادة علمية', 3, 40, 0, 0, 'approved', 'approved', true, 10, :'lbatch') returning id as lsa \gset
+insert into public.subjects (year_id, department_id, stage, shift, term, name, units, coursework_max, cw_practical_max, practical_max,
+                             status, r2_status, legacy, r2_deduction, legacy_import_id)
+values (:'ly', :'rad', 1, 'morning', 1, 'لغة عربية', 2, 30, 0, 0, 'approved', 'approved', true, 10, :'lbatch') returning id as lsb \gset
+insert into public.grades (subject_id, student_id, cw_theory, final_theory, decision, special, r2_final_theory, r2_decision, final_override, legacy) values
+  (:'lsa', :'ls1', 18, 27, 5, null, null, null, null, null),
+  (:'lsa', :'ls2', 38, null, null, 'banned', 54, null, null, null),
+  (:'lsb', :'ls1', 26, 65, null, null, null, null, 40, '{"fixed": "تسوية"}'),
+  (:'lsb', :'ls2', 20, 10, null, null, 26, 4, null, null);
+select set_config('app.legacy_import', '', false);
+select set_config('app.status_rpc', '', false);
+select t.ok((select final_max = 70 from public.subjects where id = :'lsb'), 'per-subject 30/70 distribution kept');
 select t.ok((select public.grade_total(s, g) = 50 and public.grade_passed(s, g) from public.subjects s join public.grades g on g.subject_id = s.id
-             join public.students st on st.id = g.student_id where s.year_id = :'ly' and s.name = 'مادة علمية' and st.student_no = '2501'),
-            'decision marks count towards the total (18 + 27 + 5 = 50)');
+             where s.id = :'lsa' and g.student_id = :'ls1'), 'decision marks count towards the total (18 + 27 + 5 = 50)');
 select t.ok((select public.grade_r2_total(s, g) = 82 from public.subjects s join public.grades g on g.subject_id = s.id
-             join public.students st on st.id = g.student_id where s.year_id = :'ly' and s.name = 'مادة علمية' and st.student_no = '2502'),
-            'banned in round 1: 38 + 54 = 92 − 10 = 82');
+             where s.id = :'lsa' and g.student_id = :'ls2'), 'banned in round 1: 38 + 54 = 92 − 10 = 82');
 select t.ok((select public.grade_r2_total(s, g) = 50 from public.subjects s join public.grades g on g.subject_id = s.id
-             join public.students st on st.id = g.student_id where s.year_id = :'ly' and s.name = 'لغة عربية' and st.student_no = '2502'),
-            'round-2 decision: 20 + 26 + 4 = 50 stays 50');
-select t.ok((select public.grade_r2_total(s, g) = 81 from public.subjects s join public.grades g on g.subject_id = s.id
-             join public.students st on st.id = g.student_id where s.year_id = :'ly' and s.name = 'مادة الفصل الثاني' and st.student_no = '2501'),
-            'postponed: no deduction (38 + 43 = 81)');
--- إعادة التشغيل لا تكرر شيئاً
-select t.ok((public.import_legacy_class(:'legacy_payload'::jsonb) ->> 'status') = 'unchanged', 'same files are not imported twice');
-select t.expect_error(format($$select public.import_legacy_class(jsonb_set(%L::jsonb, '{checksum}', '"xyz"'))$$, :'legacy_payload'), '%استبدال الترحيل السابق%');
-select t.ok((public.import_legacy_class(jsonb_set(jsonb_set(:'legacy_payload'::jsonb, '{checksum}', '"xyz"'), '{replace}', 'true')) ->> 'status') = 'replaced',
-            'replace re-imports the class');
-select t.ok((select count(*) = 3 from public.subjects where year_id = :'ly') and (select count(*) = 2 from public.students where year_id = :'ly')
-            and (select count(*) = 6 from public.grades g join public.subjects s on s.id = g.subject_id where s.year_id = :'ly'),
-            'replacing does not duplicate subjects, students or grades');
--- لا يُرحَّل فوق مواد النظام الحالي إلا بموافقة، ولا فوق درجات مُدخلة
-insert into public.subjects (year_id, department_id, stage, shift, term, name) values (:'ly', :'rad', 1, 'morning', 1, 'مادة من الخطة') returning id as plan_sub \gset
-select t.expect_error(format($$select public.import_legacy_class(jsonb_set(%L::jsonb, '{replace}', 'true'))$$, :'legacy_payload'), '%استبدال المواد الفارغة%');
-select t.ok((public.import_legacy_class(jsonb_set(jsonb_set(:'legacy_payload'::jsonb, '{replace}', 'true'), '{clear_empty}', 'true')) ->> 'cleared_subjects') = '1',
-            'empty current-system subjects replaced on request');
--- الصلاحيات على درجات القرار والدرجة المثبتة
+             where s.id = :'lsb' and g.student_id = :'ls2'), 'round-2 decision: 20 + 26 + 4 = 50 stays 50');
+-- حماية البيانات المرحَّلة
 :as_radhead
 select t.ok((select count(*) = 0 from public.legacy_imports), 'department heads cannot read the migration log');
-select t.expect_error(format($$update public.grades set decision = 9 where subject_id in (select id from public.subjects where year_id = %L)$$, :'ly'), '%الإدارة فقط%');
+select t.expect_error(format($$update public.grades set decision = 9 where subject_id = %L$$, :'lsa'), '%الإدارة فقط%');
+insert into public.subjects (year_id, department_id, stage, shift, term, name, legacy) values (:'ly', :'rad', 1, 'morning', 2, 'مادة جديدة', true) returning id as lnew \gset
+select t.ok((select not legacy and legacy_import_id is null from public.subjects where id = :'lnew'), 'the legacy flag cannot be set from the application');
 :as_admin
-select verify_code as lcode from public.students where year_id = :'ly' and student_no = '2502' \gset
-select t.ok((select (x ->> 'override')::numeric = 40 from jsonb_array_elements(public.verify_result(:'lcode') -> 'subjects') x where x ->> 'name' = 'مادة الفصل الثاني'),
+select t.ok((select count(*) = 1 from public.legacy_imports), 'the migration log is kept');
+select verify_code as lcode from public.students where id = :'ls1' \gset
+select t.ok((select (x ->> 'override')::numeric = 40 from jsonb_array_elements(public.verify_result(:'lcode') -> 'subjects') x where x ->> 'name' = 'لغة عربية'),
             'verification exposes the fixed final mark');
-select t.ok((select (x ->> 'r2_by_decision')::boolean from jsonb_array_elements(public.verify_result(:'lcode') -> 'subjects') x where x ->> 'name' = 'لغة عربية'),
+select verify_code as lcode2 from public.students where id = :'ls2' \gset
+select t.ok((select (x ->> 'r2_by_decision')::boolean from jsonb_array_elements(public.verify_result(:'lcode2') -> 'subjects') x where x ->> 'name' = 'لغة عربية'),
             'verification flags passes by decision');
--- التراجع
-select id as lbatch from public.legacy_imports \gset
-select public.undo_legacy_import(:'lbatch');
-select t.ok((select count(*) = 0 from public.subjects where year_id = :'ly') and (select count(*) = 0 from public.students where year_id = :'ly')
-            and (select count(*) = 0 from public.legacy_imports), 'undo removes the migrated class');
-select t.ok((select count(*) = 1 from public.audit_log where action = 'legacy.undo'), 'undo audited');
 delete from public.academic_years where id = :'ly';
 
 -- ===== كلمات المرور =====

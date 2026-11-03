@@ -2,7 +2,6 @@
 import plansJson from './plans.json'
 import { computeRow, cwTheoryMax, finalMaxOf } from '../lib/calc'
 import type {
-  LegacyImport,
   Announcement,
   AcademicYear,
   AuditEntry,
@@ -34,7 +33,6 @@ export interface DemoDB {
   audit: AuditEntry[]
   curriculum: CurriculumItem[]
   announcements: Announcement[]
-  legacyImports: LegacyImport[]
   auditSeq: number
   sessionUserId: string | null
 }
@@ -399,7 +397,6 @@ export function createDemoDB(): DemoDB {
     audit,
     curriculum,
     announcements,
-    legacyImports: [],
     auditSeq: audit.length,
     sessionUserId: null,
   }

@@ -269,7 +269,7 @@ language sql stable security definer set search_path = '' as $$
   select coalesce(public.my_role() in ('admin','dean','assistant_dean'), false)
 $$;
 
--- وضع ترحيل بيانات النظام السابق: يُفعَّل داخل import_legacy_class فقط (معاملة واحدة) ولمدير النظام أو العميد
+-- وضع ترحيل بيانات النظام السابق (لم يعد يُفعَّل بعد إزالة أداة الترحيل)؛ يبقى لحماية أعمدة البيانات المرحَّلة من التعديل
 create or replace function public.legacy_mode() returns boolean
 language sql stable security definer set search_path = '' as $$
   select coalesce(current_setting('app.legacy_import', true), '') = 'on' and coalesce(public.my_role() in ('admin','dean'), false)
@@ -664,7 +664,7 @@ declare
   v_new jsonb;
 begin
   if tg_op = 'DELETE' and pg_trigger_depth() > 1 then return null; end if;
-  -- الترحيل يُسجَّل مرة واحدة للصف كاملاً في import_legacy_class
+  -- كان الترحيل يُسجَّل مرة واحدة للصف كاملاً
   if public.legacy_mode() then return null; end if;
   if tg_op = 'UPDATE' and (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note,
                            old.r2_final_practical, old.r2_final_theory, old.r2_special, old.decision, old.r2_decision, old.final_override)
@@ -1151,210 +1151,10 @@ begin
   return v_count;
 end $$;
 
--- 6.7 ترحيل بيانات النظام السابق: صف دراسي كامل (الفصلان) في معاملة واحدة.
--- آمن لإعادة التشغيل: الملفات نفسها لا تُرحَّل مرتين، والملفات المختلفة تتطلب الاستبدال صراحةً.
--- لا تُسجَّل كل درجة في سجل العمليات بل عملية ترحيل واحدة تتضمن الإحصاءات.
-create or replace function public.import_legacy_class(p jsonb) returns jsonb
-language plpgsql security definer set search_path = '' as $$
-declare
-  v_dept uuid := nullif(p->>'department_id', '')::uuid;
-  v_stage smallint := (p->>'stage')::smallint;
-  v_shift text := p->>'shift';
-  v_label text := p->>'year';
-  v_replace boolean := coalesce((p->>'replace')::boolean, false);
-  v_clear boolean := coalesce((p->>'clear_empty')::boolean, false);
-  v_year uuid;
-  v_old public.legacy_imports;
-  v_batch uuid;
-  v_terms smallint[];
-  v_x jsonb;
-  v_id uuid;
-  v_seq int;
-  v_name text;
-  v_stu jsonb := '{}';
-  v_sub jsonb := '{}';
-  v_added int := 0;
-  v_matched int := 0;
-  v_cleared int := 0;
-  v_subjects int := 0;
-  v_grades int := 0;
-  v_dept_name text;
-begin
-  if coalesce(public.my_role() in ('admin','dean'), false) is not true then
-    raise exception 'ترحيل البيانات من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
-  end if;
-  select name into v_dept_name from public.departments where id = v_dept;
-  if v_dept_name is null then raise exception 'القسم غير موجود في النظام' using errcode = '22023'; end if;
-  if v_stage is null or v_stage not between 1 and 6 or coalesce(v_shift, '') not in ('morning','evening')
-     or coalesce(v_label, '') !~ '^\d{4}-\d{4}$' then
-    raise exception 'بيانات الصف في ملف الترحيل غير صالحة' using errcode = '22023';
-  end if;
-  select array_agg(distinct (f->>'term')::smallint) into v_terms from jsonb_array_elements(coalesce(p->'files', '[]')) f;
-  if v_terms is null or not (v_terms <@ array[1,2]::smallint[]) then
-    raise exception 'ملفات الترحيل غير صالحة' using errcode = '22023';
-  end if;
-
-  insert into public.academic_years (label) values (v_label) on conflict (label) do nothing;
-  select id into v_year from public.academic_years where label = v_label;
-  perform pg_advisory_xact_lock(hashtext('legacy:' || v_year::text || v_dept::text || v_stage::text || v_shift));
-
-  select * into v_old from public.legacy_imports
-   where year_id = v_year and department_id = v_dept and stage = v_stage and shift = v_shift;
-  if found then
-    if v_old.checksum = p->>'checksum' and not v_replace then
-      return jsonb_build_object('status', 'unchanged', 'batch_id', v_old.id) || v_old.counts;
-    end if;
-    if not v_replace then
-      raise exception 'سبق ترحيل هذا الصف من ملفات مختلفة. اختر «استبدال الترحيل السابق» للمتابعة.' using errcode = '22023';
-    end if;
-  end if;
-
-  perform set_config('app.legacy_import', 'on', true);
-  perform set_config('app.status_rpc', 'on', true);
-
-  if v_old.id is not null then
-    delete from public.subjects where legacy_import_id = v_old.id;
-  end if;
-
-  -- لا يُرحَّل فوق درجات مُدخلة في النظام الحالي
-  if exists (select 1 from public.subjects s join public.grades g on g.subject_id = s.id
-             where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage and s.shift = v_shift
-               and s.term = any (v_terms) and not s.legacy
-               and (g.cw_theory is not null or g.cw_practical is not null or g.final_practical is not null
-                    or g.final_theory is not null or g.special is not null)) then
-    raise exception 'يحتوي هذا الصف على درجات مُدخلة في النظام الحالي؛ لا يمكن الترحيل فوقها' using errcode = '22023';
-  end if;
-  -- المواد الفارغة المنشأة في النظام الحالي (مثلاً من الخطة الدراسية) تُستبدل بمواد النظام السابق بموافقة صريحة
-  if exists (select 1 from public.subjects s where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage
-             and s.shift = v_shift and s.term = any (v_terms) and not s.legacy) then
-    if not v_clear then
-      raise exception 'يحتوي هذا الصف على مواد منشأة في النظام الحالي. اختر «استبدال المواد الفارغة» للمتابعة.' using errcode = '22023';
-    end if;
-    with d as (
-      delete from public.subjects s where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage
-         and s.shift = v_shift and s.term = any (v_terms) and not s.legacy
-      returning 1)
-    select count(*) into v_cleared from d;
-  end if;
-
-  insert into public.legacy_imports as li (year_id, department_id, stage, shift, checksum, files, report, imported_by, imported_by_name)
-  values (v_year, v_dept, v_stage, v_shift, p->>'checksum', coalesce(p->'files', '[]'), p->'report', auth.uid(),
-          (select full_name from public.profiles where id = auth.uid()))
-  on conflict (year_id, department_id, stage, shift) do update set
-    checksum = excluded.checksum, files = excluded.files, report = excluded.report,
-    imported_at = now(), imported_by = excluded.imported_by, imported_by_name = excluded.imported_by_name
-  returning id into v_batch;
-
-  -- الطلبة: يُطابَق الطالب الموجود بالرقم الجامعي ثم بالاسم، وإلا يُضاف بتسلسل النظام السابق
-  for v_x in select e.value from jsonb_array_elements(coalesce(p->'students', '[]')) e
-             order by (e.value->>'seq')::int nulls last loop
-    v_name := regexp_replace(trim(coalesce(v_x->>'full_name', '')), '\s+', ' ', 'g');
-    if v_name = '' or coalesce(v_x->>'key', '') = '' then
-      raise exception 'بيانات طالب غير صالحة في ملف الترحيل' using errcode = '22023';
-    end if;
-    if v_stu ? (v_x->>'key') then
-      raise exception 'الطالب مكرر في ملف الترحيل: %', v_name using errcode = '22023';
-    end if;
-    select st.id into v_id from public.students st
-     where st.year_id = v_year and st.department_id = v_dept and st.stage = v_stage and st.shift = v_shift
-       and ((nullif(v_x->>'student_no', '') is not null and st.student_no = v_x->>'student_no') or st.full_name = v_name)
-     order by (st.student_no is not distinct from nullif(v_x->>'student_no', '')) desc
-     limit 1;
-    if v_id is null then
-      select coalesce(max(seq), 0) + 1 into v_seq from public.students
-       where year_id = v_year and department_id = v_dept and stage = v_stage and shift = v_shift;
-      insert into public.students (year_id, department_id, stage, shift, seq, full_name, student_no, gender, notes, legacy_import_id)
-      values (v_year, v_dept, v_stage, v_shift, v_seq, v_name, nullif(v_x->>'student_no', ''), nullif(v_x->>'gender', ''),
-              nullif(trim(coalesce(v_x->>'notes', '')), ''), v_batch)
-      returning id into v_id;
-      v_added := v_added + 1;
-    else
-      update public.students set student_no = coalesce(student_no, nullif(v_x->>'student_no', '')),
-                                 gender = coalesce(gender, nullif(v_x->>'gender', ''))
-       where id = v_id;
-      v_matched := v_matched + 1;
-    end if;
-    v_stu := v_stu || jsonb_build_object(v_x->>'key', v_id);
-  end loop;
-
-  -- المواد: معتمدة في الدورين لأنها نتائج نهائية من النظام السابق
-  for v_x in select e.value from jsonb_array_elements(coalesce(p->'subjects', '[]')) e loop
-    if coalesce(v_x->>'key', '') = '' or v_sub ? (v_x->>'key') or not ((v_x->>'term')::smallint = any (v_terms)) then
-      raise exception 'بيانات مادة غير صالحة في ملف الترحيل: %', v_x->>'name' using errcode = '22023';
-    end if;
-    insert into public.subjects (year_id, department_id, stage, shift, term, name, code, units,
-                                 coursework_max, cw_practical_max, practical_max,
-                                 status, submitted_at, reviewed_at, reviewed_by,
-                                 r2_status, r2_submitted_at, r2_reviewed_at, r2_reviewed_by,
-                                 sort, legacy, legacy_meta, r2_deduction, legacy_import_id)
-    values (v_year, v_dept, v_stage, v_shift, (v_x->>'term')::smallint,
-            regexp_replace(trim(v_x->>'name'), '\s+', ' ', 'g'), nullif(trim(coalesce(v_x->>'code', '')), ''),
-            (v_x->>'units')::numeric, coalesce((v_x->>'coursework_max')::numeric, 40), 0, 0,
-            'approved', now(), now(), auth.uid(), 'approved', now(), now(), auth.uid(),
-            coalesce((v_x->>'sort')::int, 0), true, v_x->'meta', (v_x->>'r2_deduction')::numeric, v_batch)
-    returning id into v_id;
-    v_sub := v_sub || jsonb_build_object(v_x->>'key', v_id);
-    v_subjects := v_subjects + 1;
-  end loop;
-
-  if exists (select 1 from jsonb_array_elements(coalesce(p->'grades', '[]')) x
-             where not (v_sub ? (x.value->>'subject')) or not (v_stu ? (x.value->>'student'))) then
-    raise exception 'سجل درجة يشير إلى مادة أو طالب غير موجود في ملف الترحيل' using errcode = '22023';
-  end if;
-  insert into public.grades (subject_id, student_id, cw_theory, final_theory, decision, special, note,
-                             r2_final_theory, r2_decision, r2_special, final_override, legacy)
-  select (v_sub->>x.subject)::uuid, (v_stu->>x.student)::uuid, x.cw_theory, x.final_theory, x.decision,
-         nullif(x.special, ''), nullif(trim(coalesce(x.note, '')), ''),
-         x.r2_final_theory, x.r2_decision, nullif(x.r2_special, ''), x.final_override, x.legacy
-  from jsonb_to_recordset(coalesce(p->'grades', '[]')) as x(subject text, student text, cw_theory numeric, final_theory numeric,
-       decision numeric, special text, note text, r2_final_theory numeric, r2_decision numeric, r2_special text,
-       final_override numeric, legacy jsonb);
-  get diagnostics v_grades = row_count;
-
-  -- طلبة ترحيل سابق لم يعودوا ضمن الملفات ولا درجات لهم
-  delete from public.students st where st.legacy_import_id = v_batch
-     and not exists (select 1 from jsonb_each_text(v_stu) e where e.value::uuid = st.id)
-     and not exists (select 1 from public.grades g where g.student_id = st.id);
-
-  update public.legacy_imports set counts = jsonb_build_object(
-      'students', v_added + v_matched, 'students_added', v_added, 'students_matched', v_matched,
-      'subjects', v_subjects, 'grades', v_grades, 'cleared_subjects', v_cleared)
-   where id = v_batch;
-  perform public.write_audit('legacy.import', 'class', v_batch::text, v_dept,
-    'ترحيل بيانات النظام السابق — ' || v_dept_name || ' — المرحلة ' || v_stage || ' — '
-      || case v_shift when 'morning' then 'صباحي' else 'مسائي' end || ' — ' || v_label,
-    jsonb_build_object('year', v_label, 'stage', v_stage, 'shift', v_shift, 'files', p->'files',
-                       'students', v_added + v_matched, 'subjects', v_subjects, 'grades', v_grades,
-                       'replaced', v_old.id is not null, 'cleared_subjects', v_cleared));
-  return jsonb_build_object('status', case when v_old.id is null then 'imported' else 'replaced' end, 'batch_id', v_batch,
-                            'students', v_added + v_matched, 'students_added', v_added, 'students_matched', v_matched,
-                            'subjects', v_subjects, 'grades', v_grades, 'cleared_subjects', v_cleared);
-end $$;
-
--- التراجع عن ترحيل صف: حذف مواده ودرجاته، والطلبة الذين أنشأهم الترحيل ولا درجات أخرى لهم
-create or replace function public.undo_legacy_import(p_id uuid) returns void
-language plpgsql security definer set search_path = '' as $$
-declare
-  v public.legacy_imports;
-  v_dept_name text;
-begin
-  if coalesce(public.my_role() in ('admin','dean'), false) is not true then
-    raise exception 'التراجع عن الترحيل من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
-  end if;
-  select * into v from public.legacy_imports where id = p_id;
-  if not found then raise exception 'عملية الترحيل غير موجودة' using errcode = '22023'; end if;
-  perform set_config('app.legacy_import', 'on', true);
-  delete from public.subjects where legacy_import_id = p_id;
-  delete from public.students st where st.legacy_import_id = p_id
-     and not exists (select 1 from public.grades g where g.student_id = st.id);
-  delete from public.legacy_imports where id = p_id;
-  select name into v_dept_name from public.departments where id = v.department_id;
-  perform public.write_audit('legacy.undo', 'class', p_id::text, v.department_id,
-    'التراجع عن ترحيل — ' || coalesce(v_dept_name, '') || ' — المرحلة ' || v.stage || ' — '
-      || case v.shift when 'morning' then 'صباحي' else 'مسائي' end || ' — '
-      || coalesce((select label from public.academic_years where id = v.year_id), ''),
-    jsonb_build_object('counts', v.counts, 'files', v.files));
-end $$;
+-- 6.7 ترحيل بيانات النظام السابق: اكتمل الترحيل فأُزيلت دوال الاستيراد من النظام.
+-- البيانات المرحَّلة (الطلبة والمواد والدرجات وسجل legacy_imports) باقية كما هي ومحمية بالقوادح نفسها.
+drop function if exists public.import_legacy_class(jsonb);
+drop function if exists public.undo_legacy_import(uuid);
 
 -- ---------------------------------------------------------------------
 -- 7) إدارة الحسابات
@@ -1851,9 +1651,7 @@ grant execute on function
   public.change_my_password(text, text),
   public.set_teacher_departments(uuid, uuid[]),
   public.verify_result(text),
-  public.legacy_mode(),
-  public.import_legacy_class(jsonb),
-  public.undo_legacy_import(uuid)
+  public.legacy_mode()
 to authenticated;
 
 -- صفحة التحقق من النتيجة عامة: يستطيع أي شخص يحمل رمز النتيجة التحقق منها دون حساب

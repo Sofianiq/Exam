@@ -13,9 +13,6 @@ import type {
   CurriculumItem,
   Department,
   Grade,
-  LegacyClassPayload,
-  LegacyImport,
-  LegacyImportResult,
   GradeRowInput,
   Profile,
   Round,
@@ -298,6 +295,12 @@ export class SupabaseBackend implements Backend {
     )
   }
 
+  async listYearStudents(yearId: string): Promise<Student[]> {
+    return fetchAll<Student>((a, b) =>
+      this.sb.from('students').select('*').eq('year_id', yearId).order('department_id').order('stage').order('shift').order('seq').order('id').range(a, b),
+    )
+  }
+
   async getStudent(id: string): Promise<Student | null> {
     return must(await this.sb.from('students').select('*').eq('id', id).maybeSingle()) as Student | null
   }
@@ -455,20 +458,6 @@ export class SupabaseBackend implements Backend {
       settings: { ...r.settings, pass_mark: Number(r.settings.pass_mark) },
       subjects: r.subjects.map((x) => ({ ...x, units: n(x.units), total: n(x.total), r2_total: n(x.r2_total), override: n(x.override) })),
     }
-  }
-
-  // ---------- ترحيل بيانات النظام السابق ----------
-  async importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult> {
-    const { compactPayload } = await import('../lib/legacy')
-    return this.rpc<LegacyImportResult>('import_legacy_class', { p: compactPayload(p) })
-  }
-
-  async listLegacyImports(): Promise<LegacyImport[]> {
-    return must(await this.sb.from('legacy_imports').select('*').order('imported_at', { ascending: false })) as LegacyImport[]
-  }
-
-  async undoLegacyImport(id: string): Promise<void> {
-    await this.rpc('undo_legacy_import', { p_id: id })
   }
 
   // ---------- الإعلانات ----------
