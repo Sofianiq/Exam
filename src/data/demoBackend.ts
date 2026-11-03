@@ -1069,12 +1069,30 @@ export class DemoBackend implements Backend {
     await wait(20)
     const me = this.me()
     const st = this.db.settings
-    return this.db.subjects
-      .filter((s) => s.year_id === yearId && this.canSeeSubject(me, s))
+    const subjects = this.db.subjects.filter((s) => s.year_id === yearId && this.canSeeSubject(me, s))
+    // فهرسة مرة واحدة بدل البحث في كل الدرجات والطلبة لكل مادة
+    const ids = new Set(subjects.map((s) => s.id))
+    const bySubject = new Map<string, Map<string, Grade>>()
+    for (const g of this.db.grades) {
+      if (!ids.has(g.subject_id)) continue
+      let m = bySubject.get(g.subject_id)
+      if (!m) bySubject.set(g.subject_id, (m = new Map()))
+      m.set(g.student_id, g)
+    }
+    const classKey = (k: ClassKey) => `${k.year_id}|${k.department_id}|${k.stage}|${k.shift}`
+    const byClass = new Map<string, Student[]>()
+    for (const x of this.db.students) {
+      if (x.year_id !== yearId || x.status !== 'active') continue
+      const k = classKey(x)
+      const list = byClass.get(k)
+      if (list) list.push(x)
+      else byClass.set(k, [x])
+    }
+    return subjects
       .map((s) => {
-        const cls = this.db.students.filter((x) => sameClass(x, s) && x.status === 'active')
+        const cls = byClass.get(classKey(s)) ?? []
         // كما في قاعدة البيانات: الدرجات المحجوبة لا تدخل في إحصاءات التدريسي
-        const gmap = new Map(this.gradesHidden(me, s) ? [] : this.db.grades.filter((g) => g.subject_id === s.id).map((g) => [g.student_id, g]))
+        const gmap = this.gradesHidden(me, s) ? new Map<string, Grade>() : (bySubject.get(s.id) ?? new Map<string, Grade>())
         const rs = cls.map((x) => computeRow(s, gmap.get(x.id), st))
         const totals = rs.map((r) => r.total).filter((t): t is number => t != null)
         return {

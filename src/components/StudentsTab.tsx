@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ClipboardPaste, Pencil, Printer, Trash2, Users } from 'lucide-react'
+import { printPage, usePrinting } from '../app/print'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useInvalidate, useStudents } from '../app/queries'
@@ -13,6 +14,7 @@ import { PrintHeader, PrintSignatures } from './PrintParts'
 import { Badge, Button, Callout, Card, EmptyState, Field, IconButton, Input, LoadingBlock, Modal, Select, Textarea, cx } from './ui'
 
 export function StudentsTab({ classKey }: { classKey: ClassKey }) {
+  const printing = usePrinting()
   const s = useSession()
   const toast = useToast()
   const confirm = useConfirm()
@@ -74,7 +76,7 @@ export function StudentsTab({ classKey }: { classKey: ClassKey }) {
           </div>
           <div className="flex flex-wrap gap-2">
             {list.length > 0 && (
-              <Button size="sm" icon={<Printer className="size-4" />} onClick={() => window.print()}>
+              <Button size="sm" icon={<Printer className="size-4" />} onClick={printPage}>
                 طباعة القائمة
               </Button>
             )}
@@ -156,7 +158,8 @@ export function StudentsTab({ classKey }: { classKey: ClassKey }) {
         )}
       </Card>
 
-      {/* نسخة الطباعة */}
+      {/* نسخة الطباعة — تُرسم عند الطباعة فقط */}
+      {printing && (
       <div className="print-only">
         <PrintHeader classKey={classKey} title="قائمة أسماء الطلبة" />
         <table className="print-table">
@@ -181,6 +184,7 @@ export function StudentsTab({ classKey }: { classKey: ClassKey }) {
         </table>
         <PrintSignatures labels={['مقرر القسم', 'رئيس القسم']} />
       </div>
+      )}
 
       <PasteStudentsDialog open={pasteOpen} onClose={() => setPasteOpen(false)} classKey={classKey} existing={list.map((x) => x.full_name)} />
       <EditStudentDialog student={edit} onClose={() => setEdit(null)} />

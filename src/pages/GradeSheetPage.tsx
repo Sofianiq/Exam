@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { printPage, usePrinting } from '../app/print'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -33,16 +34,30 @@ import { displayName, fmtDateTime, fmtNum, fmtPct, fmtTime, yearLabel } from '..
 import { SHIFT_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { normalizeArabic } from '../lib/parse'
 import { canViewAll, gradeEditBlock, gradeEditBlockR2, gradesHiddenFor, workflowActions } from '../lib/perm'
-import type { Round, SubjectStatus } from '../lib/types'
+import type { Round, Subject, SubjectStatus } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function GradeSheetPage() {
+  const printing = usePrinting()
   const { subjectId } = useParams()
   const s = useSession()
   const toast = useToast()
   const confirm = useConfirm()
   const invalidate = useInvalidate()
-  const subjectQ = useQuery({ queryKey: ['subject', subjectId], queryFn: () => backend.getSubject(subjectId!), enabled: !!subjectId })
+  const qc = useQueryClient()
+  const subjectQ = useQuery({
+    queryKey: ['subject', subjectId],
+    queryFn: () => backend.getSubject(subjectId!),
+    enabled: !!subjectId,
+    // عرض فوري من قائمة المواد المحمّلة مسبقاً ريثما تصل نسخة محدثة
+    placeholderData: () => {
+      for (const [, list] of qc.getQueriesData<Subject[]>({ queryKey: ['subjects'] })) {
+        const hit = list?.find((x) => x.id === subjectId)
+        if (hit) return hit
+      }
+      return undefined
+    },
+  })
   const subject = subjectQ.data ?? undefined
   const studentsQ = useStudents(subject ? classKeyOf(subject) : null)
   const gradesQ = useGrades(subject ? [subject.id] : [])
@@ -61,14 +76,20 @@ export function GradeSheetPage() {
     setSp(next, { replace: true })
   }
 
-  const onSaved = useCallback(() => void invalidate('progress', 'audit'), [invalidate])
+  // بعد كل حفظ: تُعلَّم كل نسخ الدرجات المخزنة (هذه المادة، الماستر شيت، النتائج) كقديمة فتُجلب من جديد عند فتحها،
+  // دون إعادة جلب الجدول المفتوح نفسه (المسودات فيه هي الأحدث)
+  const onSaved = useCallback(() => {
+    void invalidate('progress', 'audit')
+    void qc.invalidateQueries({ queryKey: ['grades'], refetchType: 'none' })
+  }, [invalidate, qc])
   const editor = useGradeEditor({ subject, students: studentsQ.data, grades: gradesQ.data, settings: s.settings, reason, onSaved })
 
   const block = !subject ? 'loading' : round === 1 ? gradeEditBlock(s.profile, subject, s.settings, dept) : gradeEditBlockR2(s.profile, subject, s.settings, dept)
   const roundStatus = round === 1 ? subject?.status : subject?.r2_status
   const roundNote = round === 1 ? subject?.status_note : subject?.r2_note
   const approvedEdit = roundStatus === 'approved' && block == null
-  const readOnly = block != null || (approvedEdit && !reason)
+  // لا يُسمح بالتعديل قبل وصول حالة المادة المحدثة من الخادم
+  const readOnly = block != null || (approvedEdit && !reason) || subjectQ.isPlaceholderData
   const actions = subject ? workflowActions(s.profile, subject, s.settings, dept, round) : null
 
   const students = useMemo(() => studentsQ.data ?? [], [studentsQ.data])
@@ -151,12 +172,18 @@ export function GradeSheetPage() {
     const onHide = () => {
       if (document.visibilityState === 'hidden') void editorRef.current.flush()
     }
+    // إعادة محاولة الحفظ تلقائياً عند عودة الاتصال
+    const onOnline = () => {
+      if (editorRef.current.dirtyCount > 0) void editorRef.current.flush()
+    }
     window.addEventListener('beforeunload', onUnload)
     window.addEventListener('keydown', onKey)
+    window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onHide)
     return () => {
       window.removeEventListener('beforeunload', onUnload)
       window.removeEventListener('keydown', onKey)
+      window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onHide)
     }
   }, [])
@@ -327,7 +354,7 @@ export function GradeSheetPage() {
               )}
               <Button size="sm" icon={<Printer className="size-4" />} onClick={() => {
                 void backend.logEvent('report.print', `طباعة — ${subject.name}`)
-                window.print()
+                printPage()
               }}>
                 طباعة / PDF
               </Button>
@@ -500,7 +527,7 @@ export function GradeSheetPage() {
         )}
       </div>
 
-      <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} />
+      {printing && <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} />}
     </div>
   )
 }

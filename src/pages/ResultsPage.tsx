@@ -1,4 +1,5 @@
 import { Award, CheckCircle2, CircleSlash, Eye, Hourglass, Printer, Search, Users, XCircle } from 'lucide-react'
+import { printPage, usePrinting } from '../app/print'
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { parseShift, useGrades, useStudents, useSubjects } from '../app/queries'
@@ -44,6 +45,7 @@ const STATUS_SHORT: Record<ResultStatus, string> = {
 
 /** صفحة النتائج: نتائج طلبة كل قسم ومرحلة ودراسة، مع طباعة النتيجة الرسمية (نتيجتان في كل صفحة A4 أفقية) */
 export function ResultsPage() {
+  const printing = usePrinting()
   const s = useSession()
   const [sp, setSp] = useSearchParams()
   const isHead = s.profile.role === 'head'
@@ -103,7 +105,7 @@ export function ResultsPage() {
 
   const print = () => {
     void backend.logEvent('report.print', `طباعة ${toPrint.length} نتيجة — ${dept?.name ?? ''} — المرحلة ${stageShort(stage)} — ${scopeLabel(scope)}`)
-    window.print()
+    printPage()
   }
 
   return (
@@ -289,7 +291,7 @@ export function ResultsPage() {
           </>
         )}
       </div>
-      <ResultSheets items={slips} className="print-only" />
+      {printing && <ResultSheets items={slips} className="print-only" />}
     </div>
   )
 }

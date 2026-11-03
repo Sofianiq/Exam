@@ -60,6 +60,8 @@ export const toDraft = (g?: Grade): DraftRow =>
       }
     : { ...EMPTY }
 
+const sameDraft = (a: DraftRow, b: DraftRow) => (Object.keys(b) as (keyof DraftRow)[]).every((k) => a[k] === b[k])
+
 export function parseDraft(subject: Subject, d: DraftRow, settings: Settings): ParsedRow {
   const values: GradeValues = {
     cw_theory: null,
@@ -119,17 +121,41 @@ export function useGradeEditor({ subject, students, grades, settings, reason, on
     const gmap = new Map(grades.map((g) => [g.student_id, g]))
     setDrafts((prev) => {
       const next: Record<string, DraftRow> = {}
-      for (const st of students) next[st.id] = dirty.current.has(st.id) && prev[st.id] ? prev[st.id] : toDraft(gmap.get(st.id))
+      for (const st of students) {
+        const cur = prev[st.id]
+        if (dirty.current.has(st.id) && cur) {
+          next[st.id] = cur
+          continue
+        }
+        const fresh = toDraft(gmap.get(st.id))
+        // نفس المرجع إذا لم تتغير القيم حتى لا يُعاد رسم الصف بعد كل حفظ تلقائي
+        next[st.id] = cur && sameDraft(cur, fresh) ? cur : fresh
+      }
       return next
     })
     const latest = grades.reduce<string | null>((m, g) => (!m || g.updated_at > m ? g.updated_at : m), null)
     setLastSaved((cur) => (cur && latest && cur > latest ? cur : latest))
   }, [grades, students])
 
+  // يُعاد تحليل الصف المعدَّل فقط (ذاكرة لكل مسودة)، فتبقى نتائج بقية الصفوف بنفس المرجع ولا تُعاد رسمها
+  const parseCache = useRef<{ subject?: Subject; settings?: Settings; map: WeakMap<DraftRow, ParsedRow> }>({ map: new WeakMap() })
   const parsed = useMemo(() => {
     const out: Record<string, ParsedRow> = {}
     if (!subject) return out
-    for (const [id, d] of Object.entries(drafts)) out[id] = parseDraft(subject, d, settings)
+    const cache = parseCache.current
+    if (cache.subject !== subject || cache.settings !== settings) {
+      cache.subject = subject
+      cache.settings = settings
+      cache.map = new WeakMap()
+    }
+    for (const [id, d] of Object.entries(drafts)) {
+      let p = cache.map.get(d)
+      if (!p) {
+        p = parseDraft(subject, d, settings)
+        cache.map.set(d, p)
+      }
+      out[id] = p
+    }
     return out
   }, [drafts, subject, settings])
   const parsedRef = useRef(parsed)
