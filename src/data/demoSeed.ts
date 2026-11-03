@@ -2,6 +2,7 @@
 import plansJson from './plans.json'
 import { computeRow, cwTheoryMax, finalMaxOf } from '../lib/calc'
 import type {
+  LegacyImport,
   Announcement,
   AcademicYear,
   AuditEntry,
@@ -33,11 +34,12 @@ export interface DemoDB {
   audit: AuditEntry[]
   curriculum: CurriculumItem[]
   announcements: Announcement[]
+  legacyImports: LegacyImport[]
   auditSeq: number
   sessionUserId: string | null
 }
 
-export const DEMO_VERSION = 6
+export const DEMO_VERSION = 7
 export const DEMO_PASSWORD = '123456'
 
 function mulberry32(seed: number) {
@@ -137,6 +139,7 @@ export function createDemoDB(): DemoDB {
     current_year_id: 'y-2026',
     second_round_cap: null,
     max_failed_subjects: 2,
+    second_round_deduction: 10,
   }
 
   const person = (id: string, username: string, full_name: string, role: Role, department_id: string | null, title: string | null): DemoProfile => ({
@@ -396,6 +399,7 @@ export function createDemoDB(): DemoDB {
     audit,
     curriculum,
     announcements,
+    legacyImports: [],
     auditSeq: audit.length,
     sessionUserId: null,
   }

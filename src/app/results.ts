@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { computeRow, gradeLabel, lowestLabel, rankDescending, sheetStats, summarizeStudent, type RowResult, type SheetStats, type StudentSummary } from '../lib/calc'
+import { RANKED_STATUSES, computeRow, gradeLabel, lowestLabel, rankDescending, sheetStats, summarizeStudent, type RowResult, type SheetStats, type StudentSummary } from '../lib/calc'
 import type { ClassKey, Grade, Settings, Student, Subject, Term, VerifiedResult, VerifiedSubject } from '../lib/types'
 import { useGrades, useStudents, useSubjects } from './queries'
 
@@ -26,13 +26,16 @@ export function buildClassResults(subjects: Subject[], students: Student[], grad
   const gmap = new Map<string, Grade>()
   for (const g of grades) gmap.set(`${g.subject_id}|${g.student_id}`, g)
   const meta = subs.map((x) => ({ name: x.name, units: x.units }))
+  // مواد الفصلين معاً = نتيجة سنوية (يجوز فيها التحميل)
+  const scope = new Set(subs.map((x) => x.term)).size > 1 ? 'annual' : 'term'
   const rows: StudentResultRow[] = students.map((st) => {
     const gs = subs.map((sub) => gmap.get(`${sub.id}|${st.id}`))
     const results = subs.map((sub, i) => computeRow(sub, gs[i], settings))
-    return { student: st, grades: gs, results, summary: summarizeStudent(meta, results, settings), rank: null }
+    return { student: st, grades: gs, results, summary: summarizeStudent(meta, results, settings, scope), rank: null }
   })
   const active = rows.filter((r) => r.student.status === 'active')
-  const ranks = rankDescending(active.map((r) => r.summary.average))
+  // التسلسل للناجحين فقط (ناجح، ناجح بعد الدور الثاني، ناجح بالتحميل) كما في النظام السابق
+  const ranks = rankDescending(active.map((r) => (RANKED_STATUSES.includes(r.summary.status) ? r.summary.average : null)))
   active.forEach((r, i) => (r.rank = ranks[i]))
   const subjectStats = subs.map((_, j) =>
     sheetStats(
@@ -93,19 +96,20 @@ export function buildStudentReport(subjects: Subject[], grades: Grade[], student
     const grade = official ? officialGrade(subject, gmap.get(subject.id)) : gmap.get(subject.id)
     return { subject, grade, result: computeRow(subject, grade, settings) }
   })
-  const summarize = (list: ReportItem[]) =>
+  const summarize = (list: ReportItem[], scope: 'term' | 'annual') =>
     summarizeStudent(
       list.map((x) => ({ name: x.subject.name, units: x.subject.units })),
       list.map((x) => x.result),
       settings,
+      scope,
     )
   const sections = ([1, 2] as Term[])
     .map((term) => {
       const list = items.filter((x) => x.subject.term === term)
-      return { term, items: list, summary: summarize(list) }
+      return { term, items: list, summary: summarize(list, 'term') }
     })
     .filter((s) => s.items.length > 0)
-  return { sections, annual: summarize(items) }
+  return { sections, annual: summarize(items, 'annual') }
 }
 
 /** يحوّل نتيجة مادة معتمدة (من صفحة التحقق) إلى صيغة RowResult ليُحسب التقدير والحالة بنفس قواعد النظام */
@@ -118,9 +122,12 @@ export function rowFromVerified(x: VerifiedSubject, settings: VerifiedResult['se
   const needsR2 = complete && (x.special != null || x.passed === false)
   const r2Complete = x.r2_approved && (x.r2_special != null || x.r2_total != null)
   const useR2 = needsR2 && r2Complete
-  const finalTotal = useR2 ? x.r2_total : x.total
-  const finalSpecial = useR2 ? x.r2_special : x.special
-  const finalPassed = finalTotal != null ? (useR2 ? x.r2_passed : x.passed) : finalSpecial != null ? false : null
+  const override = x.approved ? (x.override ?? null) : null
+  const finalTotal = override ?? (useR2 ? x.r2_total : x.total)
+  const finalSpecial = override != null ? null : useR2 ? x.r2_special : x.special
+  const finalPassed =
+    override != null ? override >= pass : finalTotal != null ? (useR2 ? x.r2_passed : x.passed) : finalSpecial != null ? false : null
+  const byDecision = finalPassed === true && override == null && (useR2 ? !!x.r2_by_decision : !!x.by_decision)
   return {
     coursework: null,
     finalSum: null,
@@ -142,6 +149,10 @@ export function rowFromVerified(x: VerifiedSubject, settings: VerifiedResult['se
     finalLabel: labelOf(finalTotal, finalPassed),
     finalPassed,
     finalBelowMin: finalTotal != null && finalTotal >= pass && finalPassed === false,
+    decision: null,
+    byDecision,
+    r2Raw: x.r2_total,
+    overridden: override != null,
   }
 }
 
@@ -154,17 +165,18 @@ export interface VerifiedSection {
 /** نتيجة التحقق: كل فصل على حدة + النتيجة السنوية (المواد غير المعتمدة تجعل النتيجة غير مكتملة) */
 export function buildVerifiedReport(v: VerifiedResult): { sections: VerifiedSection[]; annual: StudentSummary } {
   const items = v.subjects.map((subject) => ({ subject, result: rowFromVerified(subject, v.settings) }))
-  const summarize = (list: typeof items) =>
+  const summarize = (list: typeof items, scope: 'term' | 'annual') =>
     summarizeStudent(
       list.map((x) => ({ name: x.subject.name, units: x.subject.units })),
       list.map((x) => x.result),
       v.settings,
+      scope,
     )
   const sections = ([1, 2] as Term[])
     .map((term) => {
       const list = items.filter((x) => x.subject.term === term)
-      return { term, items: list, summary: summarize(list) }
+      return { term, items: list, summary: summarize(list, 'term') }
     })
     .filter((s) => s.items.length > 0)
-  return { sections, annual: summarize(items) }
+  return { sections, annual: summarize(items, 'annual') }
 }

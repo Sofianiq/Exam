@@ -17,6 +17,7 @@ import { Badge, Button, Callout, Card, CardHeader, EmptyState, LoadingBlock, cx 
 const STATUS_COLOR: Record<string, string> = {
   pass: 'text-success',
   pass_r2: 'text-success',
+  pass_carry: 'text-success',
   carry: 'text-warning',
   fail: 'text-danger',
   incomplete: 'text-muted',
@@ -50,7 +51,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
   const n = subjects.length
   const approved = subjects.filter((x) => x.status === 'approved').length
   const active = rows.filter((r) => r.student.status === 'active')
-  const passAll = active.filter((r) => r.summary.status === 'pass' || r.summary.status === 'pass_r2').length
+  const passAll = active.filter((r) => r.summary.status === 'pass' || r.summary.status === 'pass_r2' || r.summary.status === 'pass_carry').length
   const carry = active.filter((r) => r.summary.status === 'carry').length
   const failCount = active.filter((r) => r.summary.status === 'fail').length
   const bands = bandCounts(active.map((r) => r.summary.average), s.settings.grade_scale)
@@ -157,7 +158,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
             <dl className="divide-y divide-line text-sm">
               <Kpi label="ناجحون" value={`${passAll} طالب (${fmtPct(active.length ? passAll / active.length : null)})`} tone="text-success" />
               <Kpi label="مكملون (دور ثانٍ)" value={`${carry} طالب`} tone="text-warning" />
-              <Kpi label={`راسبون (أكثر من ${s.settings.max_failed_subjects} مواد)`} value={`${failCount} طالب`} tone="text-danger" />
+              <Kpi label="راسبون (بعد الدور الثاني)" value={`${failCount} طالب`} tone="text-danger" />
               <Kpi label="أعلى معدل" value={top[0] ? fmtNum(top[0].summary.average) : '—'} />
               <Kpi label="مجموع وحدات الفصل" value={`${totalUnits}`} />
             </dl>

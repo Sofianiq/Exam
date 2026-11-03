@@ -51,6 +51,7 @@ function GeneralSettings() {
         idle_minutes: Number(form.idle_minutes),
         second_round_cap: form.second_round_cap == null || Number.isNaN(form.second_round_cap) ? null : Number(form.second_round_cap),
         max_failed_subjects: Number(form.max_failed_subjects),
+        second_round_deduction: Math.max(0, Number(form.second_round_deduction) || 0),
         hide_grades_when_closed: form.hide_grades_when_closed,
         dean_name: form.dean_name?.trim() || null,
         committee_head_name: form.committee_head_name?.trim() || null,
@@ -116,9 +117,20 @@ function GeneralSettings() {
               <Input type="number" min={5} max={600} dir="ltr" className="text-center" value={form.idle_minutes} onChange={(e) => set('idle_minutes', Number(e.target.value))} />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="الحد الأقصى لمواد الإكمال" hint="الرسوب في أكثر من هذا العدد = راسب، وإلا = مكمل">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="الحد الأقصى لمواد التحميل" hint="بعد الدور الثاني: الرسوب في هذا العدد أو أقل = ناجح بالتحميل (سنوياً)، وأكثر = راسب">
               <Input type="number" min={0} max={10} dir="ltr" className="text-center" value={form.max_failed_subjects} onChange={(e) => set('max_failed_subjects', Number(e.target.value))} />
+            </Field>
+            <Field label="خصم الدور الثاني (درجة)" hint="يُخصم من الناجح في الدور الثاني دون النزول عن درجة النجاح، ولا يُخصم من المؤجل بعذر">
+              <Input
+                type="number"
+                min={0}
+                max={50}
+                dir="ltr"
+                className="text-center"
+                value={form.second_round_deduction}
+                onChange={(e) => set('second_round_deduction', Number(e.target.value))}
+              />
             </Field>
             <Field label="سقف درجة الدور الثاني" hint="اتركه فارغاً بدون سقف (لا يطبق على المؤجل بعذر)">
               <Input

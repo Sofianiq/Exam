@@ -1,4 +1,7 @@
 import type {
+  LegacyClassPayload,
+  LegacyImport,
+  LegacyImportResult,
   AcademicYear,
   AccountInput,
   Announcement,
@@ -89,6 +92,14 @@ export interface Backend {
 
   /** الأقسام الإضافية التي يدرّس فيها التدريسي (المقرر يربط قسمه أو يلغيه فقط) */
   setTeacherDepartments(userId: string, departmentIds: string[]): Promise<void>
+
+  /** سجلات الطالب في كل السنوات (بالرقم الجامعي) */
+  findStudentsByNo(studentNo: string): Promise<Student[]>
+
+  /** ترحيل صف دراسي كامل من النظام السابق في معاملة واحدة (مدير النظام والعميد فقط) */
+  importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult>
+  listLegacyImports(): Promise<LegacyImport[]>
+  undoLegacyImport(id: string): Promise<void>
 
   /** التحقق العام من نتيجة طالب برمز QR (لا يتطلب تسجيل الدخول) — null إذا كان الرمز غير صحيح */
   verifyResult(code: string): Promise<VerifiedResult | null>

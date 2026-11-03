@@ -54,8 +54,10 @@ export interface Settings {
   current_year_id: string | null
   /** سقف درجة الدور الثاني (null = بدون سقف) */
   second_round_cap: number | null
-  /** أقصى عدد مواد يُسمح بإكمالها؛ الرسوب في أكثر منها = راسب */
+  /** أقصى عدد مواد يُسمح بتحميلها في النتيجة السنوية بعد الدور الثاني (ناجح بالتحميل)؛ أكثر منها = راسب */
   max_failed_subjects: number
+  /** الدرجات المخصومة من مجموع الدور الثاني للناجح فيه (بحد أدنى درجة النجاح)، ولا تُخصم للمؤجل بعذر */
+  second_round_deduction: number
   /** حجب الدرجات عن التدريسيين عند غلق الإدخال */
   hide_grades_when_closed: boolean
   /** أسماء الموقعين على النتيجة الرسمية */
@@ -79,6 +81,11 @@ export interface Student extends ClassKey {
   notes: string | null
   /** رمز التحقق من النتيجة (يُطبع مع رمز QR) */
   verify_code: string
+  /** الرقم الجامعي للطالب (يربط سجلاته عبر السنوات) */
+  student_no?: string | null
+  gender?: 'male' | 'female' | null
+  /** عملية الترحيل التي أنشأت الطالب (للتراجع) */
+  legacy_import_id?: string | null
 }
 
 export interface Subject extends ClassKey {
@@ -103,6 +110,12 @@ export interface Subject extends ClassKey {
   ministerial: boolean
   /** الحد الأدنى لدرجة الامتحان النهائي للنجاح في المادة (null = بلا شرط) */
   final_min: number | null
+  /** خصم الدور الثاني لهذه المادة (null = حسب الإعدادات العامة) */
+  r2_deduction?: number | null
+  /** مادة مرحّلة من النظام السابق (نتائج نهائية معتمدة) */
+  legacy?: boolean
+  legacy_meta?: LegacySubjectMeta | null
+  legacy_import_id?: string | null
   r2_status: SubjectStatus
   r2_note: string | null
   r2_submitted_at: string | null
@@ -110,9 +123,22 @@ export interface Subject extends ClassKey {
   r2_reviewed_by: string | null
 }
 
+/** معلومات المادة كما وردت في النظام السابق */
+export interface LegacySubjectMeta {
+  teacher?: string | null
+  name_en?: string | null
+  file?: string | null
+  /** توزيع الدرجات مستنتج من البيانات (السعي/النهائي) */
+  inferred?: boolean
+  notes?: string | null
+}
+
 export type SubjectInput = Omit<
   Subject,
   | 'id'
+  | 'legacy'
+  | 'legacy_meta'
+  | 'legacy_import_id'
   | 'final_max'
   | 'status'
   | 'status_note'
@@ -140,6 +166,11 @@ export interface GradeValues {
   r2_final_practical: number | null
   r2_final_theory: number | null
   r2_special: SpecialCode | null
+  /** درجات القرار (قرار اللجنة/المجلس) المضافة إلى مجموع الدور الأول والثاني */
+  decision?: number | null
+  r2_decision?: number | null
+  /** درجة نهائية مثبتة يدوياً (تسوية) تتقدم على الحساب — تُستخدم للبيانات المرحّلة */
+  final_override?: number | null
 }
 
 export interface Grade extends GradeValues {
@@ -147,6 +178,27 @@ export interface Grade extends GradeValues {
   student_id: string
   updated_at: string
   updated_by: string | null
+  /** السجل الأصلي كما ورد من النظام السابق (للمراجعة) */
+  legacy?: LegacyGradeRaw | null
+}
+
+/** سجل درجة كما ورد في ملف النظام السابق */
+export interface LegacyGradeRaw {
+  cw: number | null
+  /** المجاميع في الأدوار الثلاثة */
+  t1: number | null
+  t2: number | null
+  t3: number | null
+  final: number | null
+  round: string | null
+  result: string | null
+  label: string | null
+  carried: boolean
+  status1?: string | null
+  decision_note?: string | null
+  notes?: string | null
+  /** سبب تثبيت الدرجة النهائية كما هي (إن وُجد) */
+  fixed?: string | null
 }
 
 export interface GradeRowInput extends GradeValues {
@@ -268,6 +320,10 @@ export interface VerifiedSubject {
   r2_special: SpecialCode | null
   r2_total: number | null
   r2_passed: boolean | null
+  /** الدرجة النهائية المثبتة (بيانات مرحّلة) */
+  override?: number | null
+  by_decision?: boolean
+  r2_by_decision?: boolean
 }
 
 export interface VerifiedResult {
@@ -277,4 +333,72 @@ export interface VerifiedResult {
   year: string | null
   settings: Pick<Settings, 'university_name' | 'college_name' | 'pass_mark' | 'grade_scale' | 'average_mode' | 'max_failed_subjects'>
   subjects: VerifiedSubject[]
+}
+
+/** سجل عملية ترحيل صف دراسي من النظام السابق */
+export interface LegacyImport {
+  id: string
+  year_id: string
+  department_id: string
+  stage: number
+  shift: Shift
+  checksum: string
+  files: { name: string; term: Term; checksum: string }[]
+  counts: Partial<LegacyImportCounts>
+  report: Record<string, unknown> | null
+  imported_at: string
+  imported_by_name: string | null
+}
+
+export interface LegacyImportCounts {
+  students: number
+  students_added: number
+  students_matched: number
+  subjects: number
+  grades: number
+  cleared_subjects: number
+}
+
+export interface LegacyImportResult extends Partial<LegacyImportCounts> {
+  status: 'imported' | 'replaced' | 'unchanged'
+  batch_id: string
+}
+
+/** حمولة ترحيل صف دراسي كامل (الفصلان) — تُبنى من ملفات النظام السابق بعد التحقق منها */
+export interface LegacyClassPayload {
+  year: string
+  department_id: string
+  stage: number
+  shift: Shift
+  checksum: string
+  replace?: boolean
+  clear_empty?: boolean
+  files: { name: string; term: Term; checksum: string }[]
+  students: { key: string; student_no: string | null; full_name: string; gender: 'male' | 'female' | null; seq: number; notes?: string | null }[]
+  subjects: {
+    key: string
+    term: Term
+    name: string
+    code: string | null
+    units: number | null
+    sort: number
+    coursework_max: number
+    r2_deduction: number
+    meta?: LegacySubjectMeta
+  }[]
+  grades: {
+    subject: string
+    student: string
+    cw_theory: number | null
+    final_theory: number | null
+    decision: number | null
+    special: SpecialCode | null
+    note: string | null
+    r2_final_theory: number | null
+    r2_decision: number | null
+    r2_special: SpecialCode | null
+    final_override: number | null
+    legacy: LegacyGradeRaw
+  }[]
+  report?: Record<string, unknown>
 }

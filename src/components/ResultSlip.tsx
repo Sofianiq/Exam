@@ -52,6 +52,7 @@ export interface SlipModel {
 const STATUS_TEXT: Record<ResultStatus, string> = {
   pass: 'ناجح',
   pass_r2: 'ناجح (الدور الثاني)',
+  pass_carry: 'ناجح بالتحميل',
   carry: 'مكمل',
   fail: 'راسب',
   incomplete: 'النتيجة غير مكتملة',
@@ -68,12 +69,12 @@ export function slipModel(student: Pick<Student, 'status'>, report: StudentRepor
       let note = '—'
       let tone: Tone = 'muted'
       if (r.finalPassed === true) {
-        note = r.finalRound === 2 ? 'ناجح (د2)' : 'ناجح'
+        note = r.byDecision ? 'ناجح بقرار' : r.finalRound === 2 ? 'ناجح (د2)' : 'ناجح'
         tone = 'ok'
       } else if (r.finalPassed === false) {
         const pending = r.needsR2 && !r.r2Complete
-        note = pending && status !== 'fail' ? 'مكمل' : 'راسب'
-        tone = note === 'مكمل' ? 'carry' : 'fail'
+        note = status === 'pass_carry' ? 'محملة' : pending && status !== 'fail' ? 'مكمل' : 'راسب'
+        tone = note === 'راسب' ? 'fail' : 'carry'
       }
       return {
         name: subject.name,
@@ -89,7 +90,20 @@ export function slipModel(student: Pick<Student, 'status'>, report: StudentRepor
     label: sec.summary.averageLabel,
     units: sec.items.reduce((a, x) => a + (x.subject.units ?? 0), 0),
   }))
-  const failed = !summary ? [] : status === 'fail' ? (summary.finalFailed.length ? summary.finalFailed : summary.r1Failed) : status === 'carry' ? summary.pendingR2.length ? summary.pendingR2 : summary.r1Failed : []
+  const failed = !summary
+    ? []
+    : status === 'fail'
+      ? summary.finalFailed.length
+        ? summary.finalFailed
+        : summary.r1Failed
+      : status === 'pass_carry'
+        ? summary.finalFailed
+        : status === 'carry'
+          ? summary.pendingR2.length
+            ? summary.pendingR2
+            : summary.r1Failed
+          : []
+  const byDecision = (status === 'pass' || status === 'pass_r2') && (summary?.byDecision.length ?? 0) > 0
   const anyR2 = secs.some((sec) => sec.items.some((x) => x.result.finalRound === 2))
   const inactive = student.status === 'withdrawn' || student.status === 'postponed'
   return {
@@ -97,8 +111,8 @@ export function slipModel(student: Pick<Student, 'status'>, report: StudentRepor
     overallLabel: summary?.averageLabel ?? null,
     units: sections.reduce((a, s) => a + s.units, 0),
     status: inactive ? (student.status as 'withdrawn' | 'postponed') : status,
-    statusText: inactive ? (student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : STATUS_TEXT[status],
-    failedTitle: status === 'fail' ? 'المواد الراسب فيها' : 'المواد المكمل فيها',
+    statusText: inactive ? (student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : byDecision ? 'ناجح بقرار' : STATUS_TEXT[status],
+    failedTitle: status === 'fail' ? 'المواد الراسب فيها' : status === 'pass_carry' ? 'المواد المحملة' : 'المواد المكمل فيها',
     failed: inactive ? [] : failed,
     round: anyR2 ? 'الأول والثاني' : 'الأول',
   }
@@ -140,7 +154,7 @@ export function ResultSlip({ student, dept, yearLabel, settings, report, scope, 
   const rowsCount = m.sections.reduce((a, s) => a + s.rows.length + (m.sections.length > 1 ? 1 : 0), 0)
   // كثافة الجدول حسب عدد المواد لتملأ النتيجة نصف الورقة دون ازدحام أو فراغ كبير
   const density = rowsCount > 21 ? 'dense' : rowsCount > 17 ? 'normal' : rowsCount > 10 ? 'roomy' : 'spacious'
-  const statusClass = m.status === 'pass' || m.status === 'pass_r2' ? 'is-pass' : m.status === 'carry' ? 'is-carry' : m.status === 'fail' ? 'is-fail' : 'is-muted'
+  const statusClass = m.status === 'pass' || m.status === 'pass_r2' ? 'is-pass' : m.status === 'pass_carry' ? 'is-carry' : m.status === 'carry' ? 'is-carry' : m.status === 'fail' ? 'is-fail' : 'is-muted'
   let n = 0
   return (
     <article className={`slip slip-${density}`} data-result-slip>

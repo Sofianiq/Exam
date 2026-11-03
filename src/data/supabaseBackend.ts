@@ -13,6 +13,9 @@ import type {
   CurriculumItem,
   Department,
   Grade,
+  LegacyClassPayload,
+  LegacyImport,
+  LegacyImportResult,
   GradeRowInput,
   Profile,
   Round,
@@ -176,6 +179,7 @@ export class SupabaseBackend implements Backend {
       pass_mark: Number(s.pass_mark),
       second_round_cap: s.second_round_cap == null ? null : Number(s.second_round_cap),
       max_failed_subjects: s.max_failed_subjects ?? 2,
+      second_round_deduction: s.second_round_deduction == null ? 10 : Number(s.second_round_deduction),
       hide_grades_when_closed: s.hide_grades_when_closed ?? true,
     }
   }
@@ -282,15 +286,15 @@ export class SupabaseBackend implements Backend {
   async searchStudents(yearId: string, query: string): Promise<Student[]> {
     const term = query.replace(/[,()%*\\]/g, ' ').trim()
     if (term.length < 2) return []
-    return must(
-      await this.sb
-        .from('students')
-        .select('*')
-        .eq('year_id', yearId)
-        .ilike('full_name', `%${term}%`)
-        .order('full_name')
-        .limit(60),
-    ) as Student[]
+    let q = this.sb.from('students').select('*').eq('year_id', yearId)
+    // البحث بالرقم الجامعي إذا كان النص أرقاماً
+    q = /^\d{4,}$/.test(term) ? q.like('student_no', `%${term}%`) : q.ilike('full_name', `%${term}%`)
+    return must(await q.order('full_name').limit(60)) as Student[]
+  }
+
+  async findStudentsByNo(studentNo: string): Promise<Student[]> {
+    if (!studentNo) return []
+    return must(await this.sb.from('students').select('*').eq('student_no', studentNo).limit(20)) as Student[]
   }
 
   async addStudents(k: ClassKey, names: string[]) {
@@ -430,8 +434,21 @@ export class SupabaseBackend implements Backend {
     return {
       ...r,
       settings: { ...r.settings, pass_mark: Number(r.settings.pass_mark) },
-      subjects: r.subjects.map((x) => ({ ...x, units: n(x.units), total: n(x.total), r2_total: n(x.r2_total) })),
+      subjects: r.subjects.map((x) => ({ ...x, units: n(x.units), total: n(x.total), r2_total: n(x.r2_total), override: n(x.override) })),
     }
+  }
+
+  // ---------- ترحيل بيانات النظام السابق ----------
+  async importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult> {
+    return this.rpc<LegacyImportResult>('import_legacy_class', { p })
+  }
+
+  async listLegacyImports(): Promise<LegacyImport[]> {
+    return must(await this.sb.from('legacy_imports').select('*').order('imported_at', { ascending: false })) as LegacyImport[]
+  }
+
+  async undoLegacyImport(id: string): Promise<void> {
+    await this.rpc('undo_legacy_import', { p_id: id })
   }
 
   // ---------- الإعلانات ----------
@@ -534,6 +551,7 @@ const SNAPSHOT_TABLES: [string, string[]][] = [
   ['subjects', ['id']],
   ['grades', ['subject_id', 'student_id']],
   ['curriculum', ['id']],
+  ['legacy_imports', ['id']],
 ]
 
 const num = (v: unknown) => (v == null ? null : Number(v))
@@ -549,6 +567,8 @@ function normalizeSubject(s: Subject): Subject {
     final_min: num(s.final_min),
     ministerial: !!s.ministerial,
     teacher_ids: s.teacher_ids ?? [],
+    r2_deduction: num(s.r2_deduction),
+    legacy: !!s.legacy,
   }
 }
 
@@ -562,5 +582,8 @@ function normalizeGrade(g: Grade): Grade {
     r2_final_practical: num(g.r2_final_practical),
     r2_final_theory: num(g.r2_final_theory),
     r2_special: g.r2_special ?? null,
+    decision: num(g.decision),
+    r2_decision: num(g.r2_decision),
+    final_override: num(g.final_override),
   }
 }

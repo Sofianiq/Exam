@@ -15,7 +15,7 @@ import { canSeeDepartment } from '../lib/perm'
 import { NotFoundPage } from './NotFoundPage'
 import { ScaledPreview } from './ResultsPage'
 
-export const STATUS_TONE = { pass: 'success', pass_r2: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
+export const STATUS_TONE = { pass: 'success', pass_r2: 'success', pass_carry: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
 
 export function StudentPage() {
   const { studentId } = useParams()

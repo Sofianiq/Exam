@@ -22,6 +22,7 @@ const settings: Settings = {
   current_year_id: null,
   second_round_cap: null,
   max_failed_subjects: 2,
+  second_round_deduction: 0,
   hide_grades_when_closed: true,
   dean_name: null,
   committee_head_name: null,
@@ -101,11 +102,22 @@ describe('result slip (labels only)', () => {
     expect(m.sections).toHaveLength(2)
     expect(m.sections[0].rows[0]).toMatchObject({ label: 'ضعيف', note: 'مكمل', tone: 'carry' })
 
-    const fail = buildStudentReport(subs, [grade('a', 10, 20), grade('b', 5, 20), grade('c', 10, 30)], 'st', settings)
+    // بعد الدور الثاني: ثلاث مواد راسبة (أكثر من حد التحميل) = راسب
+    const r2 = { r2_final_theory: 20 }
+    const subsR2 = subs.map((x) => ({ ...x, r2_status: 'approved' as const }))
+    const fail = buildStudentReport(subsR2, [grade('a', 10, 20, r2), grade('b', 5, 20, r2), grade('c', 10, 30, r2)], 'st', settings)
     const f = slipModel(student, fail, 0)
     expect(f).toMatchObject({ status: 'fail', statusText: 'راسب', failedTitle: 'المواد الراسب فيها' })
     expect(f.failed).toEqual(['تشريح', 'فسلجة', 'كيمياء'])
     expect(f.sections[0].rows[0]).toMatchObject({ note: 'راسب', tone: 'fail' })
+  })
+
+  it('marks a student who failed up to two subjects after round 2 as ناجح بالتحميل in the annual result', () => {
+    const subsR2 = subs.map((x) => ({ ...x, r2_status: 'approved' as const }))
+    const r = buildStudentReport(subsR2, [grade('a', 10, 20, { r2_final_theory: 20 }), grade('b', 20, 45), grade('c', 28, 64)], 'st', settings)
+    expect(r.sections[0].summary.status).toBe('fail')
+    expect(r.annual).toMatchObject({ status: 'pass_carry', finalFailed: ['تشريح'] })
+    expect(slipModel(student, r, 0)).toMatchObject({ status: 'pass_carry', statusText: 'ناجح بالتحميل' })
   })
 
   it('marks subjects passed in the second round', () => {

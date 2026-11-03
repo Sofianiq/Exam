@@ -11,6 +11,7 @@ import { SHIFT_LONG, SPECIAL_LABEL, STUDENT_STATUS_LABEL, TERM_LABEL, stageLabel
 const STATUS_TEXT: Record<ResultStatus, string> = {
   pass: 'ناجح',
   pass_r2: 'ناجح (الدور الثاني)',
+  pass_carry: 'ناجح بالتحميل',
   carry: 'مكمل',
   fail: 'راسب',
   incomplete: 'غير مكتملة',
@@ -19,6 +20,7 @@ const STATUS_TEXT: Record<ResultStatus, string> = {
 const STATUS_CLASS: Record<ResultStatus, string> = {
   pass: 'bg-[#eef3fb] text-[#14284b] border-[#9fb3d6]',
   pass_r2: 'bg-[#eef3fb] text-[#14284b] border-[#9fb3d6]',
+  pass_carry: 'bg-[#fdf5e6] text-[#8a5a00] border-[#e3c486]',
   carry: 'bg-[#fdf5e6] text-[#8a5a00] border-[#e3c486]',
   fail: 'bg-[#fbeceb] text-[#a8201a] border-[#e3a5a1]',
   incomplete: 'bg-[#f3f5f8] text-[#5f697b] border-[#d3d9e2]',
@@ -155,6 +157,7 @@ export function VerifyPage({ code }: { code: string }) {
 function failedOf(s: { status: ResultStatus; finalFailed: string[]; r1Failed: string[]; pendingR2: string[] }) {
   if (s.status === 'fail') return s.finalFailed.length ? s.finalFailed : s.r1Failed
   if (s.status === 'carry') return s.pendingR2.length ? s.pendingR2 : s.r1Failed
+  if (s.status === 'pass_carry') return s.finalFailed
   return []
 }
 
@@ -173,7 +176,7 @@ function StatusBar({ status, failed, boxed }: { status: ResultStatus; failed: st
       </span>
       {failed.length > 0 && (
         <span>
-          {status === 'fail' ? 'المواد الراسب فيها' : 'المواد المكمل فيها'}: {failed.join('، ')}
+          {status === 'fail' ? 'المواد الراسب فيها' : status === 'pass_carry' ? 'المواد المحملة' : 'المواد المكمل فيها'}: {failed.join('، ')}
         </span>
       )}
     </div>
