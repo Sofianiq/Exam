@@ -17,9 +17,6 @@ import {
   belongsTo,
 } from '../lib/perm'
 import type {
-  LegacyClassPayload,
-  LegacyImport,
-  LegacyImportResult,
   VerifiedResult,
   VerifiedSubject,
   Announcement,
@@ -393,208 +390,6 @@ export class DemoBackend implements Backend {
   }
 
   /** التحقق العام من النتيجة (بدون تسجيل دخول) — نفس منطق verify_result في قاعدة البيانات */
-  // ---------- ترحيل بيانات النظام السابق (نفس قواعد import_legacy_class) ----------
-  async importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult> {
-    await wait(150)
-    const me = this.me()
-    if (me.role !== 'admin' && me.role !== 'dean') fail('ترحيل البيانات من صلاحية مدير النظام أو العميد فقط')
-    const deptName = this.dept(p.department_id)?.name ?? fail('القسم غير موجود في النظام')
-    if (!/^\d{4}-\d{4}$/.test(p.year) || !(p.stage >= 1 && p.stage <= 6) || (p.shift !== 'morning' && p.shift !== 'evening')) {
-      fail('بيانات الصف في ملف الترحيل غير صالحة')
-    }
-    const terms = [...new Set(p.files.map((f) => f.term))]
-    if (!terms.length || terms.some((t) => t !== 1 && t !== 2)) fail('ملفات الترحيل غير صالحة')
-    // تُنفَّذ على نسخة ثم تُعتمد دفعة واحدة (كالمعاملة في قاعدة البيانات)
-    const db = clone(this.db)
-    db.legacyImports ??= []
-    let year = db.years.find((y) => y.label === p.year)
-    if (!year) {
-      year = { id: demoId('y'), label: p.year }
-      db.years.push(year)
-    }
-    const key: ClassKey = { year_id: year.id, department_id: p.department_id, stage: p.stage, shift: p.shift }
-    const old = db.legacyImports.find((x) => sameClass(x, key))
-    if (old) {
-      if (old.checksum === p.checksum && !p.replace) return { status: 'unchanged', batch_id: old.id, ...old.counts }
-      if (!p.replace) fail('سبق ترحيل هذا الصف من ملفات مختلفة. اختر «استبدال الترحيل السابق» للمتابعة.')
-    }
-    const dropSubjects = (pred: (s: Subject) => boolean) => {
-      const ids = new Set(db.subjects.filter(pred).map((s) => s.id))
-      db.grades = db.grades.filter((g) => !ids.has(g.subject_id))
-      db.subjects = db.subjects.filter((s) => !ids.has(s.id))
-      return ids.size
-    }
-    if (old) dropSubjects((s) => s.legacy_import_id === old.id)
-    const current = db.subjects.filter((s) => sameClass(s, key) && terms.includes(s.term) && !s.legacy)
-    const currentIds = new Set(current.map((s) => s.id))
-    if (db.grades.some((g) => currentIds.has(g.subject_id) && hasValues(g))) {
-      fail('يحتوي هذا الصف على درجات مُدخلة في النظام الحالي؛ لا يمكن الترحيل فوقها')
-    }
-    if (current.length && !p.clear_empty) fail('يحتوي هذا الصف على مواد منشأة في النظام الحالي. اختر «استبدال المواد الفارغة» للمتابعة.')
-    const cleared = dropSubjects((s) => currentIds.has(s.id))
-    const now = new Date().toISOString()
-    const batch: LegacyImport = {
-      id: old?.id ?? demoId('li'),
-      ...key,
-      checksum: p.checksum,
-      files: p.files,
-      counts: {},
-      report: p.report ?? null,
-      imported_at: now,
-      imported_by_name: me.full_name,
-    }
-    db.legacyImports = [...db.legacyImports.filter((x) => x.id !== batch.id), batch]
-
-    const stuMap = new Map<string, string>()
-    let added = 0
-    let matched = 0
-    for (const x of [...p.students].sort((a, b) => a.seq - b.seq)) {
-      const name = x.full_name.trim().replace(/\s+/g, ' ')
-      if (!name || !x.key) fail('بيانات طالب غير صالحة في ملف الترحيل')
-      if (stuMap.has(x.key)) fail(`الطالب مكرر في ملف الترحيل: ${name}`)
-      const cls = db.students.filter((s) => sameClass(s, key))
-      const found = (x.student_no && cls.find((s) => s.student_no === x.student_no)) || cls.find((s) => s.full_name === name)
-      if (found) {
-        found.student_no ??= x.student_no
-        found.gender ??= x.gender
-        stuMap.set(x.key, found.id)
-        matched++
-      } else {
-        const st: Student = {
-          id: demoId('st'),
-          ...key,
-          seq: cls.reduce((m, s) => Math.max(m, s.seq), 0) + 1,
-          full_name: name,
-          status: 'active',
-          notes: x.notes?.trim() || null,
-          verify_code: demoVerifyCode(),
-          student_no: x.student_no,
-          gender: x.gender,
-          legacy_import_id: batch.id,
-        }
-        db.students.push(st)
-        stuMap.set(x.key, st.id)
-        added++
-      }
-    }
-    const subMap = new Map<string, Subject>()
-    for (const x of p.subjects) {
-      if (!x.key || subMap.has(x.key) || !terms.includes(x.term)) fail(`بيانات مادة غير صالحة في ملف الترحيل: ${x.name}`)
-      const name = x.name.trim().replace(/\s+/g, ' ')
-      if (db.subjects.some((s) => sameClass(s, key) && s.term === x.term && s.name === name)) fail('توجد مادة بنفس الاسم في هذا الصف والفصل.')
-      const s: Subject = {
-        id: demoId('s'),
-        ...key,
-        term: x.term,
-        name,
-        code: x.code?.trim() || null,
-        units: x.units,
-        teacher_ids: [],
-        coursework_max: x.coursework_max,
-        cw_practical_max: 0,
-        practical_max: 0,
-        final_max: finalMaxOf(x.coursework_max, 0),
-        status: 'approved',
-        status_note: null,
-        submitted_at: now,
-        submitted_by: null,
-        reviewed_at: now,
-        reviewed_by: me.id,
-        sort: x.sort,
-        ministerial: false,
-        final_min: null,
-        r2_deduction: x.r2_deduction,
-        legacy: true,
-        legacy_meta: x.meta ?? null,
-        legacy_import_id: batch.id,
-        r2_status: 'approved',
-        r2_note: null,
-        r2_submitted_at: now,
-        r2_reviewed_at: now,
-        r2_reviewed_by: me.id,
-      }
-      db.subjects.push(s)
-      subMap.set(x.key, s)
-    }
-    for (const x of p.grades) {
-      const s = subMap.get(x.subject)
-      const stId = stuMap.get(x.student)
-      if (!s || !stId) fail('سجل درجة يشير إلى مادة أو طالب غير موجود في ملف الترحيل')
-      const out = (v: number | null, max: number) => v != null && (v < 0 || v > max)
-      if (out(x.cw_theory, s!.coursework_max) || out(x.final_theory, s!.final_max) || out(x.r2_final_theory, s!.final_max)) {
-        fail(`درجة خارج المدى في بيانات الترحيل (${s!.name})`)
-      }
-      if (db.grades.some((g) => g.subject_id === s!.id && g.student_id === stId)) fail('سجل درجة مكرر في ملف الترحيل')
-      db.grades.push({
-        subject_id: s!.id,
-        student_id: stId!,
-        cw_theory: x.cw_theory,
-        cw_practical: null,
-        final_practical: null,
-        final_theory: x.final_theory,
-        special: x.special,
-        note: x.note?.trim() || null,
-        r2_final_practical: null,
-        r2_final_theory: x.r2_final_theory,
-        r2_special: x.r2_special,
-        decision: x.decision,
-        r2_decision: x.r2_decision,
-        final_override: x.final_override,
-        // النسخة التجريبية محدودة السعة: يُحفظ من السجل الأصلي ما يلزم للمراجعة فقط
-        legacy: x.legacy.fixed || x.legacy.notes ? { ...x.legacy } : null,
-        updated_at: now,
-        updated_by: me.id,
-      })
-    }
-    const kept = new Set(stuMap.values())
-    const graded = new Set(db.grades.map((g) => g.student_id))
-    db.students = db.students.filter((s) => s.legacy_import_id !== batch.id || kept.has(s.id) || graded.has(s.id))
-    batch.counts = { students: added + matched, students_added: added, students_matched: matched, subjects: subMap.size, grades: p.grades.length, cleared_subjects: cleared }
-    const prev = this.db
-    this.db = db
-    this.audit('legacy.import', 'class', batch.id, p.department_id, `ترحيل بيانات النظام السابق — ${deptName} — المرحلة ${p.stage} — ${SHIFT_LABEL[p.shift]} — ${p.year}`, {
-      year: p.year,
-      stage: p.stage,
-      shift: p.shift,
-      files: p.files,
-      students: added + matched,
-      subjects: subMap.size,
-      grades: p.grades.length,
-      replaced: !!old,
-      cleared_subjects: cleared,
-    })
-    if (!this.persist()) {
-      this.db = prev
-      fail('مساحة التخزين في المتصفح لا تكفي لهذا الحجم من البيانات في النسخة التجريبية. استخدم قاعدة البيانات الفعلية للترحيل الكامل.')
-    }
-    return { status: old ? 'replaced' : 'imported', batch_id: batch.id, ...batch.counts }
-  }
-
-  async listLegacyImports(): Promise<LegacyImport[]> {
-    await wait(10)
-    if (!isSuper(this.me())) return []
-    return clone([...(this.db.legacyImports ?? [])].sort((a, b) => b.imported_at.localeCompare(a.imported_at)))
-  }
-
-  async undoLegacyImport(id: string): Promise<void> {
-    await wait()
-    const me = this.me()
-    if (me.role !== 'admin' && me.role !== 'dean') fail('التراجع عن الترحيل من صلاحية مدير النظام أو العميد فقط')
-    const b = (this.db.legacyImports ?? []).find((x) => x.id === id) ?? fail('عملية الترحيل غير موجودة')
-    const sIds = new Set(this.db.subjects.filter((s) => s.legacy_import_id === id).map((s) => s.id))
-    this.db.grades = this.db.grades.filter((g) => !sIds.has(g.subject_id))
-    this.db.subjects = this.db.subjects.filter((s) => !sIds.has(s.id))
-    const graded = new Set(this.db.grades.map((g) => g.student_id))
-    this.db.students = this.db.students.filter((s) => s.legacy_import_id !== id || graded.has(s.id))
-    this.db.legacyImports = this.db.legacyImports.filter((x) => x.id !== id)
-    const year = this.db.years.find((y) => y.id === b.year_id)?.label ?? ''
-    this.audit('legacy.undo', 'class', id, b.department_id, `التراجع عن ترحيل — ${this.dept(b.department_id)?.name ?? ''} — المرحلة ${b.stage} — ${SHIFT_LABEL[b.shift]} — ${year}`, {
-      counts: b.counts,
-      files: b.files,
-    })
-    this.persist()
-  }
-
   async verifyResult(code: string): Promise<VerifiedResult | null> {
     await wait(20)
     const c = code.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
@@ -687,6 +482,12 @@ export class DemoBackend implements Backend {
     const me = this.me()
     if (!this.canSeeClass(me, k)) return []
     return clone(this.db.students.filter((s) => sameClass(s, k)).sort((a, b) => a.seq - b.seq))
+  }
+
+  async listYearStudents(yearId: string): Promise<Student[]> {
+    await wait(20)
+    const me = this.me()
+    return clone(this.db.students.filter((s) => s.year_id === yearId && this.canSeeClass(me, s)))
   }
 
   async getStudent(id: string): Promise<Student | null> {

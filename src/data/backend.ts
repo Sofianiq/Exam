@@ -1,7 +1,4 @@
 import type {
-  LegacyClassPayload,
-  LegacyImport,
-  LegacyImportResult,
   AcademicYear,
   AccountInput,
   Announcement,
@@ -72,6 +69,8 @@ export interface Backend {
   deleteAccount(userId: string): Promise<void>
 
   listStudents(k: ClassKey): Promise<Student[]>
+  /** كل طلبة السنة الدراسية (حسب صلاحيات المستخدم) — للإحصائيات */
+  listYearStudents(yearId: string): Promise<Student[]>
   getStudent(id: string): Promise<Student | null>
   searchStudents(yearId: string, query: string): Promise<Student[]>
   addStudents(k: ClassKey, names: string[]): Promise<{ added: number; skipped: string[] }>
@@ -96,10 +95,6 @@ export interface Backend {
   /** سجلات الطالب في كل السنوات (بالرقم الجامعي) */
   findStudentsByNo(studentNo: string): Promise<Student[]>
 
-  /** ترحيل صف دراسي كامل من النظام السابق في معاملة واحدة (مدير النظام والعميد فقط) */
-  importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult>
-  listLegacyImports(): Promise<LegacyImport[]>
-  undoLegacyImport(id: string): Promise<void>
 
   /** التحقق العام من نتيجة طالب برمز QR (لا يتطلب تسجيل الدخول) — null إذا كان الرمز غير صحيح */
   verifyResult(code: string): Promise<VerifiedResult | null>

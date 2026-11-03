@@ -27,10 +27,10 @@ const ProgressPage = lazy(() => import('./pages/ProgressPage').then((m) => ({ de
 const ResultsBatchPage = lazy(() => import('./pages/ResultsBatchPage').then((m) => ({ default: m.ResultsBatchPage })))
 const ResultsPage = lazy(() => import('./pages/ResultsPage').then((m) => ({ default: m.ResultsPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
-const MigrationPage = lazy(() => import('./pages/MigrationPage').then((m) => ({ default: m.MigrationPage })))
 const StudentPage = lazy(() => import('./pages/StudentPage').then((m) => ({ default: m.StudentPage })))
 const StudentsSearchPage = lazy(() => import('./pages/StudentsSearchPage').then((m) => ({ default: m.StudentsSearchPage })))
 const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })))
+const StatisticsPage = lazy(() => import('./pages/StatisticsPage').then((m) => ({ default: m.StatisticsPage })))
 const VerifyPage = lazy(() => import('./pages/VerifyPage').then((m) => ({ default: m.VerifyPage })))
 
 const queryClient = new QueryClient({
@@ -63,11 +63,11 @@ const router = createHashRouter([
           { path: 'results', element: <ResultsPage /> },
           { path: 'announcements', element: <AnnouncementsPage /> },
           { path: 'progress', element: <ProgressPage /> },
+          { path: 'statistics', element: <StatisticsPage /> },
           { path: 'control', element: <ControlPage /> },
           { path: 'users', element: <UsersPage /> },
           { path: 'audit', element: <AuditPage /> },
           { path: 'settings', element: <SettingsPage /> },
-          { path: 'migration', element: <MigrationPage /> },
           { path: '*', element: <NotFoundPage /> },
         ],
       },

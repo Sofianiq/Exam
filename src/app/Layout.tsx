@@ -1,9 +1,9 @@
 import {
   Award,
   BookOpenCheck,
+  BarChart3,
   Building2,
   ClipboardCheck,
-  DatabaseZap,
   Download,
   FileBarChart2,
   History,
@@ -69,10 +69,10 @@ export function Layout() {
   if (canSeeAudit(profile)) items.push({ to: '/results', label: 'النتائج', icon: <Award className="size-4.5" /> })
   if (canReview(profile)) items.push({ to: '/review', label: 'التدقيق والاعتماد', icon: <ClipboardCheck className="size-4.5" />, badge: pendingReview })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/progress', label: 'تقرير الإنجاز', icon: <FileBarChart2 className="size-4.5" /> })
+  if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/statistics', label: 'إحصائيات اللجنة الامتحانية', icon: <BarChart3 className="size-4.5" /> })
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })
   if (canManageUsers(profile)) items.push({ to: '/users', label: 'المستخدمون', icon: <Users className="size-4.5" /> })
   if (canSeeAudit(profile)) items.push({ to: '/audit', label: 'سجل العمليات', icon: <History className="size-4.5" /> })
-  if (canEditSettings(profile)) items.push({ to: '/migration', label: 'ترحيل البيانات', icon: <DatabaseZap className="size-4.5" /> })
   if (canEditSettings(profile)) items.push({ to: '/settings', label: 'الإعدادات', icon: <SettingsIcon className="size-4.5" /> })
 
   return (
