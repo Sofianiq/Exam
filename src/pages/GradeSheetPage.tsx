@@ -76,14 +76,20 @@ export function GradeSheetPage() {
     setSp(next, { replace: true })
   }
 
-  const onSaved = useCallback(() => void invalidate('progress', 'audit'), [invalidate])
+  // بعد كل حفظ: تُعلَّم كل نسخ الدرجات المخزنة (هذه المادة، الماستر شيت، النتائج) كقديمة فتُجلب من جديد عند فتحها،
+  // دون إعادة جلب الجدول المفتوح نفسه (المسودات فيه هي الأحدث)
+  const onSaved = useCallback(() => {
+    void invalidate('progress', 'audit')
+    void qc.invalidateQueries({ queryKey: ['grades'], refetchType: 'none' })
+  }, [invalidate, qc])
   const editor = useGradeEditor({ subject, students: studentsQ.data, grades: gradesQ.data, settings: s.settings, reason, onSaved })
 
   const block = !subject ? 'loading' : round === 1 ? gradeEditBlock(s.profile, subject, s.settings, dept) : gradeEditBlockR2(s.profile, subject, s.settings, dept)
   const roundStatus = round === 1 ? subject?.status : subject?.r2_status
   const roundNote = round === 1 ? subject?.status_note : subject?.r2_note
   const approvedEdit = roundStatus === 'approved' && block == null
-  const readOnly = block != null || (approvedEdit && !reason)
+  // لا يُسمح بالتعديل قبل وصول حالة المادة المحدثة من الخادم
+  const readOnly = block != null || (approvedEdit && !reason) || subjectQ.isPlaceholderData
   const actions = subject ? workflowActions(s.profile, subject, s.settings, dept, round) : null
 
   const students = useMemo(() => studentsQ.data ?? [], [studentsQ.data])
@@ -166,12 +172,18 @@ export function GradeSheetPage() {
     const onHide = () => {
       if (document.visibilityState === 'hidden') void editorRef.current.flush()
     }
+    // إعادة محاولة الحفظ تلقائياً عند عودة الاتصال
+    const onOnline = () => {
+      if (editorRef.current.dirtyCount > 0) void editorRef.current.flush()
+    }
     window.addEventListener('beforeunload', onUnload)
     window.addEventListener('keydown', onKey)
+    window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onHide)
     return () => {
       window.removeEventListener('beforeunload', onUnload)
       window.removeEventListener('keydown', onKey)
+      window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onHide)
     }
   }, [])

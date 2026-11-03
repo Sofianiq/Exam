@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
 import { backend, type SubjectFilter } from '../data'
-import type { ClassKey, Grade, Shift, Subject, SubjectProgress } from '../lib/types'
+import type { ClassKey, Shift, Subject, SubjectProgress } from '../lib/types'
 
 export const classKeyOf = (k: ClassKey): ClassKey => ({
   year_id: k.year_id,
@@ -45,22 +45,8 @@ export const useStudents = (k: ClassKey | null) =>
   })
 
 export const useGrades = (subjectIds: string[]) => {
-  const qc = useQueryClient()
   const ids = useMemo(() => [...subjectIds].sort(), [subjectIds.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
-  return useQuery({
-    queryKey: ['grades', ids],
-    queryFn: () => backend.getGrades(ids),
-    enabled: ids.length > 0,
-    // عرض فوري من ذاكرة أوسع تحتوي هذه المواد (مثلاً فتح مادة بعد عرض الماستر شيت) ريثما تصل البيانات المحدثة
-    placeholderData: () => {
-      const want = new Set(ids)
-      for (const [key, data] of qc.getQueriesData<Grade[]>({ queryKey: ['grades'] })) {
-        const have = key[1] as string[] | undefined
-        if (data && have && have.length > ids.length && ids.every((id) => have.includes(id))) return data.filter((g) => want.has(g.subject_id))
-      }
-      return undefined
-    },
-  })
+  return useQuery({ queryKey: ['grades', ids], queryFn: () => backend.getGrades(ids), enabled: ids.length > 0 })
 }
 
 export const useCurriculum = (departmentId: string | undefined) =>

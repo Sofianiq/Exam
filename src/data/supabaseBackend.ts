@@ -44,7 +44,7 @@ export function translateError(e: PgError | Error | unknown): AppError {
   const err = (e ?? {}) as PgError
   const msg = String(err.message ?? e ?? '')
   if (ARABIC.test(msg)) return new AppError(msg)
-  if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(msg)) {
+  if (/Failed to fetch|NetworkError|Load failed|network request failed|ERR_INTERNET|ERR_NETWORK/i.test(msg)) {
     return new AppError('تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت ثم أعد المحاولة.')
   }
   if (/JWT expired|invalid JWT|refresh_token/i.test(msg)) {
