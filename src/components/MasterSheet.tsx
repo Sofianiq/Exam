@@ -1,4 +1,5 @@
 import { Award, FileSpreadsheet, IdCard, Printer, Sheet } from 'lucide-react'
+import { printPage, usePrinting } from '../app/print'
 import { Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import { useInvalidate } from '../app/queries'
@@ -25,6 +26,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term | 0 }) {
+  const printing = usePrinting()
   const s = useSession()
   const toast = useToast()
   const confirm = useConfirm()
@@ -136,7 +138,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
                   icon={<Printer className="size-4" />}
                   onClick={() => {
                     void backend.logEvent('report.print', `طباعة الماستر شيت — ${dept?.name} — المرحلة ${classKey.stage}`)
-                    window.print()
+                    printPage()
                   }}
                 >
                   طباعة / PDF
@@ -200,12 +202,14 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
         </div>
       </div>
 
-      {/* نسخة الطباعة (أفقي) */}
-      <div className="print-only print-landscape">
-        <PrintHeader classKey={classKey} term={term} title={`الماستر شيت لدرجات الطلبة — ${SHIFT_LONG[classKey.shift]}`} />
-        <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} print />
-        <PrintSignatures labels={['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد']} />
-      </div>
+      {/* نسخة الطباعة (أفقي) — تُرسم عند الطباعة فقط */}
+      {printing && (
+        <div className="print-only print-landscape">
+          <PrintHeader classKey={classKey} term={term} title={`الماستر شيت لدرجات الطلبة — ${SHIFT_LONG[classKey.shift]}`} />
+          <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} print />
+          <PrintSignatures labels={['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد']} />
+        </div>
+      )}
     </>
   )
 }

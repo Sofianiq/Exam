@@ -1,34 +1,37 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import { Layout } from './app/Layout'
 import { SessionProvider } from './app/session'
 import { FeedbackProvider } from './components/feedback'
+import { RouteError, clearChunkReloadFlag } from './components/RouteError'
 import { LoadingBlock } from './components/ui'
 import { UpdateBanner } from './components/UpdateBanner'
 import { backend } from './data'
 import type { Profile } from './lib/types'
-import { AnnouncementsPage } from './pages/AnnouncementsPage'
-import { AuditPage } from './pages/AuditPage'
 import { ClassPage } from './pages/ClassPage'
-import { ControlPage } from './pages/ControlPage'
-import { CurriculumPage } from './pages/CurriculumPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DepartmentPage, DepartmentsPage } from './pages/DepartmentsPage'
 import { GradeSheetPage } from './pages/GradeSheetPage'
 import { LoginPage } from './pages/LoginPage'
 import { MySubjectsPage } from './pages/MySubjectsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
-import { ProgressPage } from './pages/ProgressPage'
-import { ResultsBatchPage } from './pages/ResultsBatchPage'
-import { ResultsPage } from './pages/ResultsPage'
 import { ReviewPage } from './pages/ReviewPage'
-import { SettingsPage } from './pages/SettingsPage'
-import { MigrationPage } from './pages/MigrationPage'
-import { StudentPage } from './pages/StudentPage'
-import { StudentsSearchPage } from './pages/StudentsSearchPage'
-import { UsersPage } from './pages/UsersPage'
-import { VerifyPage } from './pages/VerifyPage'
+
+// الصفحات الأقل استخداماً تُحمَّل عند فتحها أول مرة فقط (تصغير حجم التحميل الأول وتسريع فتح التطبيق)
+const AnnouncementsPage = lazy(() => import('./pages/AnnouncementsPage').then((m) => ({ default: m.AnnouncementsPage })))
+const AuditPage = lazy(() => import('./pages/AuditPage').then((m) => ({ default: m.AuditPage })))
+const ControlPage = lazy(() => import('./pages/ControlPage').then((m) => ({ default: m.ControlPage })))
+const CurriculumPage = lazy(() => import('./pages/CurriculumPage').then((m) => ({ default: m.CurriculumPage })))
+const ProgressPage = lazy(() => import('./pages/ProgressPage').then((m) => ({ default: m.ProgressPage })))
+const ResultsBatchPage = lazy(() => import('./pages/ResultsBatchPage').then((m) => ({ default: m.ResultsBatchPage })))
+const ResultsPage = lazy(() => import('./pages/ResultsPage').then((m) => ({ default: m.ResultsPage })))
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const MigrationPage = lazy(() => import('./pages/MigrationPage').then((m) => ({ default: m.MigrationPage })))
+const StudentPage = lazy(() => import('./pages/StudentPage').then((m) => ({ default: m.StudentPage })))
+const StudentsSearchPage = lazy(() => import('./pages/StudentsSearchPage').then((m) => ({ default: m.StudentsSearchPage })))
+const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })))
+const VerifyPage = lazy(() => import('./pages/VerifyPage').then((m) => ({ default: m.VerifyPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,27 +43,34 @@ const queryClient = new QueryClient({
 const router = createHashRouter([
   {
     element: <Layout />,
+    errorElement: <RouteError />,
     children: [
-      { index: true, element: <DashboardPage /> },
-      { path: 'my-subjects', element: <MySubjectsPage /> },
-      { path: 'departments', element: <DepartmentsPage /> },
-      { path: 'departments/:deptId', element: <DepartmentPage /> },
-      { path: 'departments/:deptId/plan', element: <CurriculumPage /> },
-      { path: 'class/:deptId/:stage/:shift', element: <ClassPage /> },
-      { path: 'class/:deptId/:stage/:shift/results', element: <ResultsBatchPage /> },
-      { path: 'students', element: <StudentsSearchPage /> },
-      { path: 'student/:studentId', element: <StudentPage /> },
-      { path: 'subjects/:subjectId', element: <GradeSheetPage /> },
-      { path: 'review', element: <ReviewPage /> },
-      { path: 'results', element: <ResultsPage /> },
-      { path: 'announcements', element: <AnnouncementsPage /> },
-      { path: 'progress', element: <ProgressPage /> },
-      { path: 'control', element: <ControlPage /> },
-      { path: 'users', element: <UsersPage /> },
-      { path: 'audit', element: <AuditPage /> },
-      { path: 'settings', element: <SettingsPage /> },
-      { path: 'migration', element: <MigrationPage /> },
-      { path: '*', element: <NotFoundPage /> },
+      {
+        // أخطاء الصفحات تظهر داخل الواجهة مع بقاء القائمة الجانبية
+        errorElement: <RouteError />,
+        children: [
+          { index: true, element: <DashboardPage /> },
+          { path: 'my-subjects', element: <MySubjectsPage /> },
+          { path: 'departments', element: <DepartmentsPage /> },
+          { path: 'departments/:deptId', element: <DepartmentPage /> },
+          { path: 'departments/:deptId/plan', element: <CurriculumPage /> },
+          { path: 'class/:deptId/:stage/:shift', element: <ClassPage /> },
+          { path: 'class/:deptId/:stage/:shift/results', element: <ResultsBatchPage /> },
+          { path: 'students', element: <StudentsSearchPage /> },
+          { path: 'student/:studentId', element: <StudentPage /> },
+          { path: 'subjects/:subjectId', element: <GradeSheetPage /> },
+          { path: 'review', element: <ReviewPage /> },
+          { path: 'results', element: <ResultsPage /> },
+          { path: 'announcements', element: <AnnouncementsPage /> },
+          { path: 'progress', element: <ProgressPage /> },
+          { path: 'control', element: <ControlPage /> },
+          { path: 'users', element: <UsersPage /> },
+          { path: 'audit', element: <AuditPage /> },
+          { path: 'settings', element: <SettingsPage /> },
+          { path: 'migration', element: <MigrationPage /> },
+          { path: '*', element: <NotFoundPage /> },
+        ],
+      },
     ],
   },
 ])
@@ -80,6 +90,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const t = setTimeout(clearChunkReloadFlag, 10_000)
+    return () => clearTimeout(t)
+  }, [])
+
+  useEffect(() => {
     backend
       .currentProfile()
       .then((p) => setAuth(p ? { status: 'in', profile: p } : { status: 'out' }))
@@ -95,7 +110,9 @@ export default function App() {
   if (verifyCode) {
     return (
       <QueryClientProvider client={queryClient}>
-        <VerifyPage code={verifyCode} />
+        <Suspense fallback={<LoadingBlock />}>
+          <VerifyPage code={verifyCode} />
+        </Suspense>
       </QueryClientProvider>
     )
   }

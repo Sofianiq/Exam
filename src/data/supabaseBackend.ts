@@ -76,6 +76,25 @@ function must<T>(res: Res<T>): T {
 const PAGE = 1000
 
 /** يجلب كل الصفوف على دفعات لتجاوز حد 1000 صف في Supabase */
+/** ينفذ المهام بالتوازي بحد أقصى للطلبات المتزامنة مع الحفاظ على الترتيب */
+async function parallel<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+// مادة واحدة نادراً ما تتجاوز 200 طالب، فخمس مواد في كل طلب تبقى ضمن صفحة واحدة (1000 صف) غالباً
+const GRADE_CHUNK = 5
+const GRADE_COLUMNS =
+  'subject_id,student_id,cw_theory,cw_practical,final_practical,final_theory,special,note,r2_final_practical,r2_final_theory,r2_special,decision,r2_decision,final_override,updated_at,updated_by'
+
 async function fetchAll<T>(make: (from: number, to: number) => PromiseLike<Res<T[]>>): Promise<T[]> {
   const out: T[] = []
   for (let from = 0; ; from += PAGE) {
@@ -481,15 +500,13 @@ export class SupabaseBackend implements Backend {
 
   // ---------- الدرجات ----------
   async getGrades(subjectIds: string[]): Promise<Grade[]> {
-    const out: Grade[] = []
-    for (let i = 0; i < subjectIds.length; i += 60) {
-      const chunk = subjectIds.slice(i, i + 60)
-      const rows = await fetchAll<Grade>((a, b) =>
-        this.sb.from('grades').select('*').in('subject_id', chunk).order('subject_id').order('student_id').range(a, b),
-      )
-      out.push(...rows.map(normalizeGrade))
-    }
-    return out
+    // دفعات صغيرة تُجلب بالتوازي (بدل صفحات متتالية) وبالأعمدة المطلوبة فقط دون السجل الأصلي للنظام السابق
+    const chunks: string[][] = []
+    for (let i = 0; i < subjectIds.length; i += GRADE_CHUNK) chunks.push(subjectIds.slice(i, i + GRADE_CHUNK))
+    const parts = await parallel(chunks, 6, (chunk) =>
+      fetchAll<Grade>((a, b) => this.sb.from('grades').select(GRADE_COLUMNS).in('subject_id', chunk).order('subject_id').order('student_id').range(a, b)),
+    )
+    return parts.flat().map(normalizeGrade)
   }
 
   async saveGrades(subjectId: string, rows: GradeRowInput[], reason?: string | null): Promise<string> {

@@ -245,6 +245,9 @@ create table if not exists public.audit_log (
 );
 create index if not exists audit_log_at_idx on public.audit_log (at desc);
 create index if not exists audit_log_dept_idx on public.audit_log (department_id, at desc);
+create index if not exists subjects_legacy_import_idx on public.subjects (legacy_import_id) where legacy_import_id is not null;
+create index if not exists students_legacy_import_idx on public.students (legacy_import_id) where legacy_import_id is not null;
+create index if not exists audit_log_action_idx on public.audit_log (action, id desc);
 
 -- ---------------------------------------------------------------------
 -- 2) دوال مساعدة للصلاحيات
@@ -303,6 +306,30 @@ language sql stable security definer set search_path = '' as $$
          or (public.my_role() = 'head' and s.department_id = public.my_department())
          or (public.my_role() = 'teacher' and auth.uid() = any (s.teacher_ids)) )
   )
+$$;
+
+-- صفوف التدريسي (التي يدرّس فيها مادة واحدة على الأقل) — تُحسب مرة واحدة لكل استعلام داخل سياسة الطلبة
+create or replace function public.my_teacher_classes()
+returns table (year_id uuid, department_id uuid, stage smallint, shift text)
+language sql stable security definer set search_path = '' as $$
+  select distinct s.year_id, s.department_id, s.stage, s.shift
+  from public.subjects s
+  where auth.uid() = any (s.teacher_ids)
+$$;
+
+-- المواد التي يقرأ المستخدم درجاتها (لغير الإدارة واللجنة): مواد قسم المقرر ومواد التدريسي،
+-- مع حجب درجات التدريسي عند غلق الإدخال. تُحسب مرة واحدة لكل استعلام بدل كل صف
+create or replace function public.my_grade_subjects() returns uuid[]
+language sql stable security definer set search_path = '' as $$
+  select coalesce(array_agg(s.id), '{}')
+  from public.subjects s
+  join public.departments d on d.id = s.department_id
+  cross join public.settings st
+  where st.id = 1
+    and ((public.my_role() = 'head' and s.department_id = public.my_department())
+         or auth.uid() = any (s.teacher_ids))
+    and not (coalesce(public.my_role() = 'teacher', false) and coalesce(st.hide_grades_when_closed, true)
+             and (not coalesce(st.entry_open, true) or not d.entry_open))
 $$;
 
 -- سبب منع تعديل الدرجات (null = مسموح)
@@ -1618,6 +1645,8 @@ end $$;
 -- 8) عرض متابعة الإنجاز
 -- ---------------------------------------------------------------------
 
+-- نسبة الإنجاز لكل مادة. تُحسب درجات الدور الأول مباشرة داخل الاستعلام (بقراءة الإعدادات مرة واحدة)
+-- بدل استدعاء دوال الحساب لكل درجة، وهي نفس قواعد grade_total / grade_passed / grade_r2_total
 create or replace view public.subject_progress with (security_invoker = true) as
 select s.id as subject_id, s.year_id, s.department_id, s.stage, s.shift, s.term, s.status,
        coalesce(c.n_students, 0)::int as n_students,
@@ -1630,18 +1659,42 @@ select s.id as subject_id, s.year_id, s.department_id, s.stage, s.shift, s.term,
        coalesce(c.n_r2_needed, 0)::int as n_r2_needed,
        coalesce(c.n_r2_done, 0)::int as n_r2_done
 from public.subjects s
+cross join (select pass_mark, rounding from public.settings where id = 1) cfg
 left join lateral (
   select count(*) as n_students,
-         count(*) filter (where g.special is not null or public.grade_total(s, g) is not null) as n_complete,
-         count(*) filter (where public.grade_passed(s, g)) as n_pass,
-         count(*) filter (where not public.grade_passed(s, g)) as n_fail,
-         count(*) filter (where g.special is not null) as n_special,
-         round(avg(public.grade_total(s, g)), 2) as avg_total,
-         count(*) filter (where g.special is not null or not public.grade_passed(s, g)) as n_r2_needed,
-         count(*) filter (where (g.special is not null or not public.grade_passed(s, g))
-                            and (g.r2_special is not null or public.grade_r2_total(s, g) is not null)) as n_r2_done
+         count(*) filter (where x.special is not null or x.total is not null) as n_complete,
+         count(*) filter (where x.passed) as n_pass,
+         count(*) filter (where not x.passed) as n_fail,
+         count(*) filter (where x.special is not null) as n_special,
+         round(avg(x.total), 2) as avg_total,
+         count(*) filter (where x.special is not null or not x.passed) as n_r2_needed,
+         count(*) filter (where (x.special is not null or not x.passed) and x.r2_done) as n_r2_done
   from public.students st
   left join public.grades g on g.subject_id = s.id and g.student_id = st.id
+  cross join lateral (
+    select g.special,
+           t.total,
+           case when t.total is null then null
+                else t.total >= cfg.pass_mark
+                     and (s.final_min is null or coalesce(g.final_practical, 0) + coalesce(g.final_theory, 0) >= s.final_min)
+           end as passed,
+           (g.r2_special is not null
+             or (g.subject_id is not null
+                 and not (s.coursework_max - s.cw_practical_max > 0 and g.cw_theory is null)
+                 and not (s.cw_practical_max > 0 and g.cw_practical is null)
+                 and not (s.practical_max > 0 and g.r2_final_practical is null)
+                 and not (s.final_max > 0 and g.r2_final_theory is null))) as r2_done
+    from (select case
+            when g.subject_id is null or g.special is not null then null
+            when (s.coursework_max - s.cw_practical_max > 0 and g.cw_theory is null)
+              or (s.cw_practical_max > 0 and g.cw_practical is null)
+              or (s.practical_max > 0 and g.final_practical is null)
+              or (s.final_max > 0 and g.final_theory is null) then null
+            else (select case cfg.rounding when 'round' then round(v) when 'ceil' then ceil(v) else v end
+                  from (select coalesce(g.cw_theory, 0) + coalesce(g.cw_practical, 0) + coalesce(g.final_practical, 0)
+                             + coalesce(g.final_theory, 0) + coalesce(g.decision, 0) as v) q)
+          end as total) t
+  ) x
   where st.year_id = s.year_id and st.department_id = s.department_id
     and st.stage = s.stage and st.shift = s.shift and st.status = 'active'
 ) c on true;
@@ -1663,7 +1716,7 @@ alter table public.announcements  enable row level security;
 alter table public.legacy_imports enable row level security;
 
 drop policy if exists legacy_imports_read on public.legacy_imports;
-create policy legacy_imports_read on public.legacy_imports for select to authenticated using (public.is_super());
+create policy legacy_imports_read on public.legacy_imports for select to authenticated using ((select public.is_super()));
 
 drop policy if exists departments_read on public.departments;
 create policy departments_read on public.departments for select to authenticated using (true);
@@ -1687,10 +1740,11 @@ create policy settings_write on public.settings for update to authenticated
   using (public.my_role() in ('admin','dean')) with check (public.my_role() in ('admin','dean'));
 
 drop policy if exists students_read on public.students;
+-- ملاحظة أداء: الدوال داخل (select …) تُحسب مرة واحدة للاستعلام كله وليس لكل صف
 create policy students_read on public.students for select to authenticated using (
-  public.can_view_all()
-  or (public.my_role() = 'head' and department_id = public.my_department())
-  or public.is_class_teacher(year_id, department_id, stage, shift)
+  (select public.can_view_all())
+  or ((select public.my_role()) = 'head' and department_id = (select public.my_department()))
+  or (year_id, department_id, stage, shift) in (select t.year_id, t.department_id, t.stage, t.shift from public.my_teacher_classes() t)
 );
 drop policy if exists students_insert on public.students;
 create policy students_insert on public.students for insert to authenticated
@@ -1704,9 +1758,9 @@ create policy students_delete on public.students for delete to authenticated
 
 drop policy if exists subjects_read on public.subjects;
 create policy subjects_read on public.subjects for select to authenticated using (
-  public.can_view_all()
-  or (public.my_role() = 'head' and department_id = public.my_department())
-  or auth.uid() = any (teacher_ids)
+  (select public.can_view_all())
+  or ((select public.my_role()) = 'head' and department_id = (select public.my_department()))
+  or (select auth.uid()) = any (teacher_ids)
 );
 drop policy if exists subjects_insert on public.subjects;
 create policy subjects_insert on public.subjects for insert to authenticated
@@ -1720,8 +1774,7 @@ create policy subjects_delete on public.subjects for delete to authenticated
 
 drop policy if exists grades_read on public.grades;
 create policy grades_read on public.grades for select to authenticated
-  using (exists (select 1 from public.subjects s where s.id = subject_id)
-         and not public.grades_hidden_for_me(subject_id));
+  using ((select public.can_view_all()) or subject_id = any ((select public.my_grade_subjects())::uuid[]));
 drop policy if exists grades_insert on public.grades;
 create policy grades_insert on public.grades for insert to authenticated
   with check (public.can_write_subject(subject_id));
@@ -1754,7 +1807,7 @@ create policy curriculum_write on public.curriculum for all to authenticated
 
 drop policy if exists audit_read on public.audit_log;
 create policy audit_read on public.audit_log for select to authenticated using (
-  public.can_view_all() or (public.my_role() = 'head' and department_id = public.my_department())
+  (select public.can_view_all()) or ((select public.my_role()) = 'head' and department_id = (select public.my_department()))
 );
 
 -- ---------------------------------------------------------------------
@@ -1776,6 +1829,7 @@ revoke execute on function public.write_audit(text, text, text, uuid, text, json
 grant execute on function
   public.my_role(), public.my_department(), public.is_super(), public.can_view_all(),
   public.can_manage_department(uuid), public.is_class_teacher(uuid, uuid, smallint, text),
+  public.my_teacher_classes(), public.my_grade_subjects(),
   public.can_write_subject(uuid), public.grade_edit_block_reason(uuid), public.grade_r2_block_reason(uuid),
   public.apply_rounding(numeric), public.grade_total(public.subjects, public.grades),
   public.grade_r2_total(public.subjects, public.grades),

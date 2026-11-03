@@ -47,10 +47,12 @@ export function buildClassResults(subjects: Subject[], students: Student[], grad
 
 /** نتائج صف لفصل محدد (1 أو 2) أو للسنة كاملة (0) */
 export function useClassResults(classKey: ClassKey, term: Term | 0, settings: Settings) {
-  const subjectsQ = useSubjects({ ...classKey, term: term || undefined })
+  // مواد الصف ودرجاته للفصلين معاً تُجلب مرة واحدة؛ التبديل بين الفصول يتم في الذاكرة دون انتظار
+  const subjectsQ = useSubjects({ ...classKey })
   const studentsQ = useStudents(classKey)
-  const subjects = useMemo(() => subjectsQ.data ?? [], [subjectsQ.data])
-  const gradesQ = useGrades(subjects.map((x) => x.id))
+  const all = useMemo(() => subjectsQ.data ?? [], [subjectsQ.data])
+  const subjects = useMemo(() => (term ? all.filter((x) => x.term === term) : all), [all, term])
+  const gradesQ = useGrades(all.map((x) => x.id))
   const data = useMemo(
     () => buildClassResults(subjects, studentsQ.data ?? [], gradesQ.data ?? [], settings),
     [subjects, studentsQ.data, gradesQ.data, settings],

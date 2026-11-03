@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query'
 import {
   Award,
   BookOpenCheck,
@@ -22,13 +21,13 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AnnouncementBanner } from '../components/AnnouncementBanner'
 import { ChangePasswordDialog } from '../components/ChangePasswordDialog'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, IconButton, Select, cx } from '../components/ui'
-import { backend, isDemo } from '../data'
+import { Badge, IconButton, LoadingBlock, Select, cx } from '../components/ui'
+import { isDemo } from '../data'
 import { displayName, yearLabel } from '../lib/format'
 import { ROLE_LABEL, SHIFT_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canEditSettings, canManageUsers, canReview, canSeeAudit, canToggleEntry, canViewAll } from '../lib/perm'
@@ -53,12 +52,9 @@ export function Layout() {
   const loc = useLocation()
   useEffect(() => setOpen(false), [loc.pathname])
 
-  const progressQ = useQuery({
-    queryKey: ['progress', s.yearId],
-    queryFn: () => backend.listProgress(s.yearId),
-    enabled: !!s.yearId && canReview(profile),
-  })
-  const pendingReview = progressQ.data?.filter((p) => p.status === 'submitted' || (p.status === 'approved' && p.r2_status === 'submitted')).length ?? 0
+  // عدد القوائم بانتظار التدقيق من قائمة المواد المشتركة (خفيفة) بدل تقرير الإنجاز
+  const reviewQ = useSubjects({ year_id: s.yearId }, canReview(profile))
+  const pendingReview = reviewQ.data?.filter((p) => p.status === 'submitted' || (p.status === 'approved' && p.r2_status === 'submitted')).length ?? 0
   const annQ = useAnnouncements()
   const { seen } = useSeenAnnouncements(profile.id)
   const unreadAnn = (annQ.data ?? []).filter((a) => isActive(a) && !seen.has(a.id)).length
@@ -141,7 +137,9 @@ export function Layout() {
         </div>
       )}
       <main className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
-        <Outlet />
+        <Suspense fallback={<LoadingBlock />}>
+          <Outlet />
+        </Suspense>
       </main>
       <ChangePasswordDialog open={pwOpen} forced={profile.must_change_password} onClose={() => setPwOpen(false)} />
     </div>

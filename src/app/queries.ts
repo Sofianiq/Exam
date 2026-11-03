@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { backend, type SubjectFilter } from '../data'
-import type { ClassKey, Shift, SubjectProgress } from '../lib/types'
+import type { ClassKey, Grade, Shift, Subject, SubjectProgress } from '../lib/types'
 
 export const classKeyOf = (k: ClassKey): ClassKey => ({
   year_id: k.year_id,
@@ -10,8 +10,32 @@ export const classKeyOf = (k: ClassKey): ClassKey => ({
   shift: k.shift,
 })
 
-export const useSubjects = (f: SubjectFilter, enabled = true) =>
-  useQuery({ queryKey: ['subjects', f], queryFn: () => backend.listSubjects(f), enabled: enabled && !!f.year_id })
+/** يطابق المادة مع مرشح البحث (القسم، المرحلة، الدراسة، الفصل، التدريسي) */
+export const matchesSubject = (x: Subject, f: SubjectFilter) =>
+  (!f.department_id || x.department_id === f.department_id) &&
+  (!f.stage || x.stage === f.stage) &&
+  (!f.shift || x.shift === f.shift) &&
+  (!f.term || x.term === f.term) &&
+  (!f.teacher_id || x.teacher_ids.includes(f.teacher_id))
+
+/**
+ * مواد السنة الدراسية تُجلب مرة واحدة (حسب صلاحيات المستخدم) وتُرشَّح في الذاكرة،
+ * فتتشارك كل الصفحات والتبويبات ذاكرة واحدة ويصبح التنقل بينها فورياً
+ */
+export const useSubjects = (f: SubjectFilter, enabled = true) => {
+  const { department_id, stage, shift, term, teacher_id } = f
+  const select = useMemo(
+    () => (all: Subject[]) => all.filter((x) => matchesSubject(x, { year_id: f.year_id, department_id, stage, shift, term, teacher_id })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [department_id, stage, shift, term, teacher_id],
+  )
+  return useQuery({
+    queryKey: ['subjects', { year_id: f.year_id }],
+    queryFn: () => backend.listSubjects({ year_id: f.year_id }),
+    enabled: enabled && !!f.year_id,
+    select,
+  })
+}
 
 export const useStudents = (k: ClassKey | null) =>
   useQuery({
@@ -21,8 +45,22 @@ export const useStudents = (k: ClassKey | null) =>
   })
 
 export const useGrades = (subjectIds: string[]) => {
-  const ids = [...subjectIds].sort()
-  return useQuery({ queryKey: ['grades', ids], queryFn: () => backend.getGrades(ids), enabled: ids.length > 0 })
+  const qc = useQueryClient()
+  const ids = useMemo(() => [...subjectIds].sort(), [subjectIds.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+  return useQuery({
+    queryKey: ['grades', ids],
+    queryFn: () => backend.getGrades(ids),
+    enabled: ids.length > 0,
+    // عرض فوري من ذاكرة أوسع تحتوي هذه المواد (مثلاً فتح مادة بعد عرض الماستر شيت) ريثما تصل البيانات المحدثة
+    placeholderData: () => {
+      const want = new Set(ids)
+      for (const [key, data] of qc.getQueriesData<Grade[]>({ queryKey: ['grades'] })) {
+        const have = key[1] as string[] | undefined
+        if (data && have && have.length > ids.length && ids.every((id) => have.includes(id))) return data.filter((g) => want.has(g.subject_id))
+      }
+      return undefined
+    },
+  })
 }
 
 export const useCurriculum = (departmentId: string | undefined) =>

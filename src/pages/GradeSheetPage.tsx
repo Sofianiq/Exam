@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { printPage, usePrinting } from '../app/print'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -33,16 +34,30 @@ import { displayName, fmtDateTime, fmtNum, fmtPct, fmtTime, yearLabel } from '..
 import { SHIFT_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
 import { normalizeArabic } from '../lib/parse'
 import { canViewAll, gradeEditBlock, gradeEditBlockR2, gradesHiddenFor, workflowActions } from '../lib/perm'
-import type { Round, SubjectStatus } from '../lib/types'
+import type { Round, Subject, SubjectStatus } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function GradeSheetPage() {
+  const printing = usePrinting()
   const { subjectId } = useParams()
   const s = useSession()
   const toast = useToast()
   const confirm = useConfirm()
   const invalidate = useInvalidate()
-  const subjectQ = useQuery({ queryKey: ['subject', subjectId], queryFn: () => backend.getSubject(subjectId!), enabled: !!subjectId })
+  const qc = useQueryClient()
+  const subjectQ = useQuery({
+    queryKey: ['subject', subjectId],
+    queryFn: () => backend.getSubject(subjectId!),
+    enabled: !!subjectId,
+    // عرض فوري من قائمة المواد المحمّلة مسبقاً ريثما تصل نسخة محدثة
+    placeholderData: () => {
+      for (const [, list] of qc.getQueriesData<Subject[]>({ queryKey: ['subjects'] })) {
+        const hit = list?.find((x) => x.id === subjectId)
+        if (hit) return hit
+      }
+      return undefined
+    },
+  })
   const subject = subjectQ.data ?? undefined
   const studentsQ = useStudents(subject ? classKeyOf(subject) : null)
   const gradesQ = useGrades(subject ? [subject.id] : [])
@@ -327,7 +342,7 @@ export function GradeSheetPage() {
               )}
               <Button size="sm" icon={<Printer className="size-4" />} onClick={() => {
                 void backend.logEvent('report.print', `طباعة — ${subject.name}`)
-                window.print()
+                printPage()
               }}>
                 طباعة / PDF
               </Button>
@@ -500,7 +515,7 @@ export function GradeSheetPage() {
         )}
       </div>
 
-      <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} />
+      {printing && <SubjectPrint subject={subject} students={students} parsed={editor.parsed} stats={stats} teachers={teachers} />}
     </div>
   )
 }

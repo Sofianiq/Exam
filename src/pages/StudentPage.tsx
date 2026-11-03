@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { printPage, usePrinting } from '../app/print'
 import { ChevronLeft, History, Printer } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -18,6 +19,7 @@ import { ScaledPreview } from './ResultsPage'
 export const STATUS_TONE = { pass: 'success', pass_r2: 'success', pass_carry: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
 
 export function StudentPage() {
+  const printing = usePrinting()
   const { studentId } = useParams()
   const s = useSession()
   const [scope, setScope] = useState<ResultScope | null>(null)
@@ -101,7 +103,7 @@ export function StudentPage() {
                   icon={<Printer className="size-4" />}
                   onClick={() => {
                     void backend.logEvent('report.print', `طباعة نتيجة — ${student.full_name}`)
-                    window.print()
+                    printPage()
                   }}
                 >
                   طباعة النتيجة
@@ -139,7 +141,7 @@ export function StudentPage() {
           </>
         )}
       </div>
-      {report.sections.length > 0 && <ResultSheets items={slips} className="print-only" />}
+      {printing && report.sections.length > 0 && <ResultSheets items={slips} className="print-only" />}
     </div>
   )
 }

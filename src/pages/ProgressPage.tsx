@@ -1,4 +1,5 @@
 import { FileSpreadsheet, Printer } from 'lucide-react'
+import { printPage, usePrinting } from '../app/print'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useProgress, useSubjects } from '../app/queries'
@@ -14,6 +15,7 @@ import type { SubjectProgress } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function ProgressPage() {
+  const printing = usePrinting()
   const s = useSession()
   const toast = useToast()
   const isHead = s.profile.role === 'head'
@@ -82,7 +84,7 @@ export function ProgressPage() {
           subtitle="متابعة إدخال الدرجات وحالة القوائم لكل مادة وتدريسي"
           actions={
             <>
-              <Button size="sm" icon={<Printer className="size-4" />} onClick={() => window.print()}>
+              <Button size="sm" icon={<Printer className="size-4" />} onClick={printPage}>
                 طباعة / PDF
               </Button>
               <Button size="sm" icon={<FileSpreadsheet className="size-4" />} onClick={() => void exportExcel()}>
@@ -178,6 +180,7 @@ export function ProgressPage() {
         </Card>
       </div>
 
+      {printing && (
       <div className="print-only print-landscape">
         <PrintHeader title={view === 'subjects' ? 'تقرير إنجاز إدخال الدرجات' : 'تقرير التدريسيين'} extra={dept ? `قسم ${s.deptById(dept)?.name}` : 'جميع الأقسام'} />
         {view === 'subjects' ? (
@@ -222,6 +225,7 @@ export function ProgressPage() {
         )}
         <PrintSignatures labels={['رئيس اللجنة الامتحانية', 'معاون العميد', 'العميد']} />
       </div>
+      )}
     </div>
   )
 }
