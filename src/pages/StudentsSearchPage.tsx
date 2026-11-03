@@ -32,7 +32,7 @@ export function StudentsSearchPage() {
       <PageHeader title="البحث عن طالب" subtitle={`اعرض درجات الطالب في جميع المواد واطبع نتيجته — السنة الدراسية ${yearLabel(s.year?.label)}`} />
       <div className="relative mb-4">
         <Search className="pointer-events-none absolute inset-y-0 start-4 my-auto size-5 text-faint" />
-        <input autoFocus className="field h-12 ps-12 text-base" placeholder="اكتب جزءاً من اسم الطالب (حرفان على الأقل)…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input autoFocus className="field h-12 ps-12 text-base" placeholder="اكتب جزءاً من اسم الطالب أو رقمه الجامعي…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <Card>
         {term.length < 2 ? (

@@ -188,6 +188,16 @@ export function GradeGrid({ subject, students, numberOf, drafts, parsed, readOnl
               {showFinSum && sumCell(res?.finalSum ?? null, 100 - subject.coursework_max)}
               <td className={cx('px-2 text-center text-base font-bold tabular-nums', fail ? 'text-danger' : 'text-ink')} title={res?.belowFinalMin ? 'لم يبلغ الحد الأدنى في الامتحان النهائي (مادة تقويمية)' : undefined}>
                 {res?.special ? <span className="text-sm text-warning">{SPECIAL_LABEL[res.special]}</span> : fmtNum(res?.total ?? null)}
+                {!!p?.values.decision && (
+                  <span className="block text-[0.65rem] font-semibold text-gold-text" title="درجات قرار مضافة إلى المجموع">
+                    قرار +{fmtNum(p.values.decision)}
+                  </span>
+                )}
+                {res?.overridden && (
+                  <span className="block text-[0.65rem] font-semibold text-info" title="الدرجة النهائية مثبتة كما وردت من النظام السابق">
+                    النهائية {fmtNum(res.finalTotal)}
+                  </span>
+                )}
               </td>
               <td className={cx('px-2 text-center text-xs font-medium', fail ? 'text-danger' : 'text-muted')}>{res?.label}</td>
               <td className="p-0.5">

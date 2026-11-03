@@ -184,16 +184,16 @@ export interface Grade extends GradeValues {
 
 /** سجل درجة كما ورد في ملف النظام السابق */
 export interface LegacyGradeRaw {
-  cw: number | null
+  cw?: number | null
   /** المجاميع في الأدوار الثلاثة */
-  t1: number | null
-  t2: number | null
-  t3: number | null
-  final: number | null
-  round: string | null
-  result: string | null
-  label: string | null
-  carried: boolean
+  t1?: number | null
+  t2?: number | null
+  t3?: number | null
+  final?: number | null
+  round?: string | null
+  result?: string | null
+  label?: string | null
+  carried?: boolean
   status1?: string | null
   decision_note?: string | null
   notes?: string | null

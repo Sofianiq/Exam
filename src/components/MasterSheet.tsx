@@ -327,6 +327,11 @@ function MasterTable({
                     <td key={j} className={cx(td, r.finalPassed === false && r.finalTotal != null && 'font-bold text-danger print-fail', r.finalSpecial && 'text-xs text-warning')}>
                       {r.finalSpecial ? SPECIAL_LABEL[r.finalSpecial] : fmtNum(r.finalTotal)}
                       {r.finalRound === 2 && <sup className="ms-0.5 text-gold-text">د2</sup>}
+                      {r.byDecision && (
+                        <sup className="ms-0.5 text-info" title="ناجح بقرار">
+                          ق
+                        </sup>
+                      )}
                     </td>
                   ) : (
                     <Fragment key={j}>

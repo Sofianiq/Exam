@@ -69,6 +69,8 @@ export const ACTION_LABEL: Record<string, string> = {
   'report.export': 'تصدير تقرير',
   'report.print': 'طباعة تقرير',
   'backup.export': 'نسخة احتياطية',
+  'legacy.import': 'ترحيل بيانات النظام السابق',
+  'legacy.undo': 'التراجع عن ترحيل',
 }
 
 export const TITLES = ['أ.د.', 'أ.م.د.', 'م.د.', 'م.م.', 'م.', 'د.', 'أ.']

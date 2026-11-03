@@ -156,6 +156,13 @@ export function Round2Grid({
               {showSum && <td className="bg-surface-2/60 px-2 text-center text-sm font-semibold tabular-nums text-muted">{fmtNum(res?.r2FinalSum ?? null)}</td>}
               <td className={cx('px-2 text-center text-base font-bold tabular-nums', fail ? 'text-danger' : 'text-success')}>
                 {res?.r2Special ? <span className="text-sm text-warning">{SPECIAL_LABEL[res.r2Special]}</span> : fmtNum(res?.r2Total ?? null)}
+                {res?.r2Raw != null && res.r2Total != null && res.r2Raw !== res.r2Total && (
+                  <span className="block text-[0.65rem] font-medium text-muted" title="مجموع الدور الثاني قبل خصم الدور الثاني">
+                    قبل الخصم {fmtNum(res.r2Raw)}
+                  </span>
+                )}
+                {!!p?.values.r2_decision && <span className="block text-[0.65rem] font-semibold text-gold-text">قرار +{fmtNum(p.values.r2_decision)}</span>}
+                {res?.overridden && <span className="block text-[0.65rem] font-semibold text-info">النهائية {fmtNum(res.finalTotal)}</span>}
               </td>
               <td className={cx('px-2 text-center text-xs font-medium', fail ? 'text-danger' : 'text-muted')}>{res?.r2Total != null ? res.finalLabel : ''}</td>
               <td className="p-0.5">

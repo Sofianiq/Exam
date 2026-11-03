@@ -4,6 +4,7 @@ import {
   BookOpenCheck,
   Building2,
   ClipboardCheck,
+  DatabaseZap,
   Download,
   FileBarChart2,
   History,
@@ -75,6 +76,7 @@ export function Layout() {
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })
   if (canManageUsers(profile)) items.push({ to: '/users', label: 'المستخدمون', icon: <Users className="size-4.5" /> })
   if (canSeeAudit(profile)) items.push({ to: '/audit', label: 'سجل العمليات', icon: <History className="size-4.5" /> })
+  if (canEditSettings(profile)) items.push({ to: '/migration', label: 'ترحيل البيانات', icon: <DatabaseZap className="size-4.5" /> })
   if (canEditSettings(profile)) items.push({ to: '/settings', label: 'الإعدادات', icon: <SettingsIcon className="size-4.5" /> })
 
   return (

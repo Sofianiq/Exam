@@ -440,7 +440,8 @@ export class SupabaseBackend implements Backend {
 
   // ---------- ترحيل بيانات النظام السابق ----------
   async importLegacyClass(p: LegacyClassPayload): Promise<LegacyImportResult> {
-    return this.rpc<LegacyImportResult>('import_legacy_class', { p })
+    const { compactPayload } = await import('../lib/legacy')
+    return this.rpc<LegacyImportResult>('import_legacy_class', { p: compactPayload(p) })
   }
 
   async listLegacyImports(): Promise<LegacyImport[]> {
