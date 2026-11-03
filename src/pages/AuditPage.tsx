@@ -21,6 +21,7 @@ const CATEGORIES: { value: string; label: string }[] = [
   { value: 'auth.', label: 'الدخول والخروج' },
   { value: 'settings.', label: 'الإعدادات' },
   { value: 'report.', label: 'التقارير والتصدير' },
+  { value: 'legacy.', label: 'ترحيل البيانات' },
 ]
 
 const PAGE = 50

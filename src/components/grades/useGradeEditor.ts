@@ -14,6 +14,10 @@ export interface DraftRow {
   r2_final_practical: string
   r2_final_theory: string
   r2_special: SpecialCode | ''
+  /** قيم للقراءة فقط (درجات القرار والدرجة المثبتة) تحددها الإدارة أو ترحيل النظام السابق */
+  decision: number | null
+  r2_decision: number | null
+  final_override: number | null
 }
 
 export interface ParsedRow {
@@ -32,6 +36,9 @@ const EMPTY: DraftRow = {
   r2_final_practical: '',
   r2_final_theory: '',
   r2_special: '',
+  decision: null,
+  r2_decision: null,
+  final_override: null,
 }
 const str = (n: number | null | undefined) => (n == null ? '' : String(n))
 
@@ -47,6 +54,9 @@ export const toDraft = (g?: Grade): DraftRow =>
         r2_final_practical: str(g.r2_final_practical),
         r2_final_theory: str(g.r2_final_theory),
         r2_special: g.r2_special ?? '',
+        decision: g.decision ?? null,
+        r2_decision: g.r2_decision ?? null,
+        final_override: g.final_override ?? null,
       }
     : { ...EMPTY }
 
@@ -61,6 +71,9 @@ export function parseDraft(subject: Subject, d: DraftRow, settings: Settings): P
     r2_final_practical: null,
     r2_final_theory: null,
     r2_special: d.r2_special || null,
+    decision: d.decision,
+    r2_decision: d.r2_decision,
+    final_override: d.final_override,
   }
   const errors: ParsedRow['errors'] = {}
   for (const c of componentsOf(subject)) {

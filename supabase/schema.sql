@@ -185,6 +185,52 @@ alter table public.students alter column verify_code set default upper(substr(re
 alter table public.students alter column verify_code set not null;
 create unique index if not exists students_verify_code_idx on public.students (verify_code);
 
+-- ترقيات الإصدار الخامس: ترحيل بيانات النظام السابق، درجات القرار، خصم الدور الثاني، الرقم الجامعي
+alter table public.settings add column if not exists second_round_deduction numeric(5,2) not null default 10;
+alter table public.subjects add column if not exists r2_deduction numeric(5,2);
+alter table public.subjects add column if not exists legacy boolean not null default false;
+alter table public.subjects add column if not exists legacy_meta jsonb;
+alter table public.grades add column if not exists decision numeric(5,2);
+alter table public.grades add column if not exists r2_decision numeric(5,2);
+alter table public.grades add column if not exists final_override numeric(5,2);
+alter table public.grades add column if not exists legacy jsonb;
+alter table public.students add column if not exists student_no text;
+alter table public.students add column if not exists gender text;
+do $$ begin
+  alter table public.settings add constraint settings_r2_deduction_check check (second_round_deduction between 0 and 50);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.subjects add constraint subjects_r2_deduction_check check (r2_deduction is null or r2_deduction between 0 and 50);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.grades add constraint grades_decision_check check (
+    (decision is null or decision between 0 and 100) and (r2_decision is null or r2_decision between 0 and 100)
+    and (final_override is null or final_override between 0 and 100));
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.students add constraint students_gender_check check (gender is null or gender in ('male','female'));
+exception when duplicate_object then null; end $$;
+create index if not exists students_no_idx on public.students (student_no) where student_no is not null;
+
+-- سجل عمليات الترحيل: صف واحد لكل صف دراسي (سنة/قسم/مرحلة/دراسة) لمنع التكرار وإتاحة التراجع
+create table if not exists public.legacy_imports (
+  id                uuid primary key default gen_random_uuid(),
+  year_id           uuid not null references public.academic_years (id) on delete cascade,
+  department_id     uuid not null references public.departments (id) on delete cascade,
+  stage             smallint not null check (stage between 1 and 6),
+  shift             text not null check (shift in ('morning','evening')),
+  checksum          text not null,
+  files             jsonb not null default '[]',
+  counts            jsonb not null default '{}',
+  report            jsonb,
+  imported_at       timestamptz not null default now(),
+  imported_by       uuid default auth.uid(),
+  imported_by_name  text,
+  unique (year_id, department_id, stage, shift)
+);
+alter table public.subjects add column if not exists legacy_import_id uuid references public.legacy_imports (id) on delete set null;
+alter table public.students add column if not exists legacy_import_id uuid references public.legacy_imports (id) on delete set null;
+
 create table if not exists public.audit_log (
   id             bigint generated always as identity primary key,
   at             timestamptz not null default now(),
@@ -218,6 +264,12 @@ $$;
 create or replace function public.is_super() returns boolean
 language sql stable security definer set search_path = '' as $$
   select coalesce(public.my_role() in ('admin','dean','assistant_dean'), false)
+$$;
+
+-- وضع ترحيل بيانات النظام السابق: يُفعَّل داخل import_legacy_class فقط (معاملة واحدة) ولمدير النظام أو العميد
+create or replace function public.legacy_mode() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(current_setting('app.legacy_import', true), '') = 'on' and coalesce(public.my_role() in ('admin','dean'), false)
 $$;
 
 -- من يرى كل الأقسام (الإدارة العليا + اللجنة الامتحانية)
@@ -349,7 +401,7 @@ language sql stable set search_path = '' as $$
       or (s.practical_max > 0 and g.final_practical is null)
       or (s.final_max > 0 and g.final_theory is null) then null
     else public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0)
-                             + coalesce(g.final_practical,0) + coalesce(g.final_theory,0))
+                             + coalesce(g.final_practical,0) + coalesce(g.final_theory,0) + coalesce(g.decision,0))
   end
 $$;
 
@@ -364,22 +416,34 @@ language sql stable set search_path = '' as $$
   end
 $$;
 
--- مجموع الدور الثاني: السعي ثابت + درجات الامتحان النهائي للدور الثاني
--- (يُطبق سقف الدور الثاني إن وُجد، إلا للمؤجل بعذر لأن دوره الثاني يُعد دوراً أول)
+-- مجموع الدور الثاني: السعي ثابت + درجات الامتحان النهائي للدور الثاني (+ درجات القرار إن وُجدت).
+-- يُخصم من الناجح في الدور الثاني «خصم الدور الثاني» (10 درجات افتراضياً) دون النزول عن درجة النجاح،
+-- ثم يُطبق سقف الدور الثاني إن وُجد. المؤجل بعذر لا خصم عليه ولا سقف لأن دوره الثاني يُعد دوراً أول
 create or replace function public.grade_r2_total(s public.subjects, g public.grades) returns numeric
 language sql stable set search_path = '' as $$
+  with x as (
+    select public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0) + coalesce(g.r2_final_practical,0)
+                               + coalesce(g.r2_final_theory,0) + coalesce(g.r2_decision,0)) as raw,
+           st.pass_mark,
+           coalesce(st.second_round_cap, 100) as cap,
+           coalesce(s.r2_deduction, st.second_round_deduction, 0) as ded
+    from public.settings st where st.id = 1
+  )
   select case
     when g.subject_id is null or g.r2_special is not null then null
     when (s.coursework_max - s.cw_practical_max > 0 and g.cw_theory is null)
       or (s.cw_practical_max > 0 and g.cw_practical is null)
       or (s.practical_max > 0 and g.r2_final_practical is null)
       or (s.final_max > 0 and g.r2_final_theory is null) then null
+    when g.special = 'postponed' then x.raw
     else least(
-      public.apply_rounding(coalesce(g.cw_theory,0) + coalesce(g.cw_practical,0)
-                          + coalesce(g.r2_final_practical,0) + coalesce(g.r2_final_theory,0)),
-      case when g.special = 'postponed' then 100
-           else coalesce((select second_round_cap from public.settings where id = 1), 100) end)
+      case when x.ded > 0 and x.raw >= x.pass_mark
+                and (s.final_min is null or coalesce(g.r2_final_practical,0) + coalesce(g.r2_final_theory,0) >= s.final_min)
+           then greatest(x.pass_mark, x.raw - x.ded)
+           else x.raw end,
+      x.cap)
   end
+  from x
 $$;
 
 -- هل الطالب ناجح في الدور الثاني؟ (نفس شرط المادة التقويمية على امتحان الدور الثاني)
@@ -437,9 +501,35 @@ declare
   v_r2 boolean;
   v_total numeric;
   v_has_reason boolean := coalesce(trim(current_setting('app.change_reason', true)), '') <> '';
+  v_legacy boolean := public.legacy_mode();
 begin
   -- الحذف المتسلسل (عند حذف مادة أو طالب أو سنة) تم التحقق من صلاحيته على الجدول الأصل
   if tg_op = 'DELETE' and pg_trigger_depth() > 1 then return old; end if;
+
+  -- ترحيل بيانات النظام السابق (من دالة الترحيل فقط): درجات معتمدة أصلاً، فلا تنطبق عليها قيود الإدخال اليومي
+  if v_legacy and tg_op = 'INSERT' then
+    select * into s from public.subjects where id = new.subject_id;
+    select * into st from public.students where id = new.student_id;
+    if s.legacy is not true or st.id is null or st.year_id <> s.year_id or st.department_id <> s.department_id
+       or st.stage <> s.stage or st.shift <> s.shift then
+      raise exception 'سجل ترحيل غير صالح' using errcode = '22023';
+    end if;
+    if new.cw_theory not between 0 and s.coursework_max - s.cw_practical_max
+       or new.final_theory not between 0 and s.final_max or new.r2_final_theory not between 0 and s.final_max then
+      raise exception 'درجة خارج المدى في بيانات الترحيل (%)', s.name using errcode = '22023';
+    end if;
+    new.updated_at := now();
+    new.updated_by := auth.uid();
+    return new;
+  end if;
+
+  -- درجات القرار والدرجة المثبتة وبيانات النظام السابق: للإدارة العليا فقط
+  if tg_op <> 'DELETE' and not public.is_super() and (
+       (tg_op = 'INSERT' and (new.decision is not null or new.r2_decision is not null or new.final_override is not null or new.legacy is not null))
+    or (tg_op = 'UPDATE' and (new.decision, new.r2_decision, new.final_override, new.legacy)
+                             is distinct from (old.decision, old.r2_decision, old.final_override, old.legacy))) then
+    raise exception 'درجات القرار والدرجة المثبتة تُعدَّل من قبل الإدارة فقط' using errcode = '42501';
+  end if;
 
   -- في عملية الحفظ (insert ... on conflict) إذا كان السجل موجوداً فالتحقق يتم في قادح التعديل
   -- الذي يرى القيم القديمة والجديدة معاً
@@ -453,10 +543,10 @@ begin
 
   -- ما الذي تغيّر: درجات الدور الأول أم الدور الثاني؟ (لكل منهما صلاحياته وحالته)
   if tg_op = 'UPDATE' then
-    v_r1 := (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note)
-            is distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note);
-    v_r2 := (old.r2_final_practical, old.r2_final_theory, old.r2_special)
-            is distinct from (new.r2_final_practical, new.r2_final_theory, new.r2_special);
+    v_r1 := (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note, old.decision, old.final_override)
+            is distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note, new.decision, new.final_override);
+    v_r2 := (old.r2_final_practical, old.r2_final_theory, old.r2_special, old.r2_decision)
+            is distinct from (new.r2_final_practical, new.r2_final_theory, new.r2_special, new.r2_decision);
   elsif tg_op = 'INSERT' then
     v_r1 := true;
     v_r2 := (new.r2_final_practical, new.r2_final_theory, new.r2_special) is distinct from (null::numeric, null::numeric, null::text);
@@ -547,10 +637,12 @@ declare
   v_new jsonb;
 begin
   if tg_op = 'DELETE' and pg_trigger_depth() > 1 then return null; end if;
+  -- الترحيل يُسجَّل مرة واحدة للصف كاملاً في import_legacy_class
+  if public.legacy_mode() then return null; end if;
   if tg_op = 'UPDATE' and (old.cw_theory, old.cw_practical, old.final_practical, old.final_theory, old.special, old.note,
-                           old.r2_final_practical, old.r2_final_theory, old.r2_special)
+                           old.r2_final_practical, old.r2_final_theory, old.r2_special, old.decision, old.r2_decision, old.final_override)
        is not distinct from (new.cw_theory, new.cw_practical, new.final_practical, new.final_theory, new.special, new.note,
-                             new.r2_final_practical, new.r2_final_theory, new.r2_special) then
+                             new.r2_final_practical, new.r2_final_theory, new.r2_special, new.decision, new.r2_decision, new.final_override) then
     return null;
   end if;
   select * into s from public.subjects where id = coalesce(new.subject_id, old.subject_id);
@@ -558,12 +650,14 @@ begin
   if tg_op <> 'INSERT' then
     v_old := jsonb_build_object('cw_theory', old.cw_theory, 'cw_practical', old.cw_practical,
       'final_practical', old.final_practical, 'final_theory', old.final_theory, 'special', old.special, 'note', old.note,
-      'r2_final_practical', old.r2_final_practical, 'r2_final_theory', old.r2_final_theory, 'r2_special', old.r2_special);
+      'r2_final_practical', old.r2_final_practical, 'r2_final_theory', old.r2_final_theory, 'r2_special', old.r2_special,
+      'decision', old.decision, 'r2_decision', old.r2_decision, 'final_override', old.final_override);
   end if;
   if tg_op <> 'DELETE' then
     v_new := jsonb_build_object('cw_theory', new.cw_theory, 'cw_practical', new.cw_practical,
       'final_practical', new.final_practical, 'final_theory', new.final_theory, 'special', new.special, 'note', new.note,
-      'r2_final_practical', new.r2_final_practical, 'r2_final_theory', new.r2_final_theory, 'r2_special', new.r2_special);
+      'r2_final_practical', new.r2_final_practical, 'r2_final_theory', new.r2_final_theory, 'r2_special', new.r2_special,
+      'decision', new.decision, 'r2_decision', new.r2_decision, 'final_override', new.final_override);
   end if;
   perform public.write_audit(
     case tg_op when 'INSERT' then 'grade.create' when 'UPDATE' then 'grade.update' else 'grade.delete' end,
@@ -584,8 +678,12 @@ create or replace function public.subjects_guard() returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare
   v_has_grades boolean;
+  v_legacy boolean := public.legacy_mode();
 begin
   if tg_op = 'INSERT' then
+    if not v_legacy then
+      new.legacy := false; new.legacy_import_id := null; new.legacy_meta := null; -- تُنشأ مواد النظام السابق بدالة الترحيل فقط
+    end if;
     if coalesce(current_setting('app.status_rpc', true), '') <> 'on' then
       new.status := 'draft';
       new.status_note := null;
@@ -610,6 +708,9 @@ begin
   end if;
 
   -- UPDATE
+  if not v_legacy then
+    new.legacy := old.legacy; new.legacy_import_id := old.legacy_import_id; new.legacy_meta := old.legacy_meta;
+  end if;
   if coalesce(current_setting('app.status_rpc', true), '') <> 'on' and
      (new.status, new.status_note, new.submitted_at, new.submitted_by, new.reviewed_at, new.reviewed_by,
       new.r2_status, new.r2_note, new.r2_submitted_at, new.r2_reviewed_at, new.r2_reviewed_by)
@@ -665,6 +766,7 @@ create trigger subjects_link_teachers after insert or update of teacher_ids, dep
 create or replace function public.subjects_audit() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
+  if public.legacy_mode() then return null; end if; -- يُسجَّل الترحيل مرة واحدة
   if tg_op = 'UPDATE' and (to_jsonb(new) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by'
                            - 'r2_status' - 'r2_note' - 'r2_submitted_at' - 'r2_reviewed_at' - 'r2_reviewed_by')
                         = (to_jsonb(old) - 'status' - 'status_note' - 'submitted_at' - 'submitted_by' - 'reviewed_at' - 'reviewed_by'
@@ -691,6 +793,7 @@ begin
   if tg_op = 'INSERT' then
     new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
     new.verify_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16)); -- لا يُختار يدوياً
+    if not public.legacy_mode() then new.legacy_import_id := null; end if;
     return new;
   end if;
   if exists (select 1 from public.grades g where g.student_id = old.id
@@ -707,6 +810,7 @@ begin
   if tg_op = 'DELETE' then return old; end if;
   new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
   new.verify_code := old.verify_code; -- رمز التحقق من النتيجة ثابت لا يُعدَّل
+  if not public.legacy_mode() then new.legacy_import_id := old.legacy_import_id; end if;
   return new;
 end $$;
 
@@ -718,6 +822,7 @@ create or replace function public.students_audit() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
   if tg_op = 'INSERT' then return null; end if; -- الإضافة الجماعية تُسجَّل في add_students
+  if public.legacy_mode() then return null; end if; -- يُسجَّل الترحيل مرة واحدة
   if tg_op = 'UPDATE' and (new.full_name, new.status, new.notes, new.year_id, new.department_id, new.stage, new.shift)
                           is not distinct from (old.full_name, old.status, old.notes, old.year_id, old.department_id, old.stage, old.shift) then
     return null; -- تغيير الترتيب فقط
@@ -1019,6 +1124,211 @@ begin
   return v_count;
 end $$;
 
+-- 6.7 ترحيل بيانات النظام السابق: صف دراسي كامل (الفصلان) في معاملة واحدة.
+-- آمن لإعادة التشغيل: الملفات نفسها لا تُرحَّل مرتين، والملفات المختلفة تتطلب الاستبدال صراحةً.
+-- لا تُسجَّل كل درجة في سجل العمليات بل عملية ترحيل واحدة تتضمن الإحصاءات.
+create or replace function public.import_legacy_class(p jsonb) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_dept uuid := nullif(p->>'department_id', '')::uuid;
+  v_stage smallint := (p->>'stage')::smallint;
+  v_shift text := p->>'shift';
+  v_label text := p->>'year';
+  v_replace boolean := coalesce((p->>'replace')::boolean, false);
+  v_clear boolean := coalesce((p->>'clear_empty')::boolean, false);
+  v_year uuid;
+  v_old public.legacy_imports;
+  v_batch uuid;
+  v_terms smallint[];
+  v_x jsonb;
+  v_id uuid;
+  v_seq int;
+  v_name text;
+  v_stu jsonb := '{}';
+  v_sub jsonb := '{}';
+  v_added int := 0;
+  v_matched int := 0;
+  v_cleared int := 0;
+  v_subjects int := 0;
+  v_grades int := 0;
+  v_dept_name text;
+begin
+  if coalesce(public.my_role() in ('admin','dean'), false) is not true then
+    raise exception 'ترحيل البيانات من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+  end if;
+  select name into v_dept_name from public.departments where id = v_dept;
+  if v_dept_name is null then raise exception 'القسم غير موجود في النظام' using errcode = '22023'; end if;
+  if v_stage is null or v_stage not between 1 and 6 or coalesce(v_shift, '') not in ('morning','evening')
+     or coalesce(v_label, '') !~ '^\d{4}-\d{4}$' then
+    raise exception 'بيانات الصف في ملف الترحيل غير صالحة' using errcode = '22023';
+  end if;
+  select array_agg(distinct (f->>'term')::smallint) into v_terms from jsonb_array_elements(coalesce(p->'files', '[]')) f;
+  if v_terms is null or not (v_terms <@ array[1,2]::smallint[]) then
+    raise exception 'ملفات الترحيل غير صالحة' using errcode = '22023';
+  end if;
+
+  insert into public.academic_years (label) values (v_label) on conflict (label) do nothing;
+  select id into v_year from public.academic_years where label = v_label;
+  perform pg_advisory_xact_lock(hashtext('legacy:' || v_year::text || v_dept::text || v_stage::text || v_shift));
+
+  select * into v_old from public.legacy_imports
+   where year_id = v_year and department_id = v_dept and stage = v_stage and shift = v_shift;
+  if found then
+    if v_old.checksum = p->>'checksum' and not v_replace then
+      return jsonb_build_object('status', 'unchanged', 'batch_id', v_old.id) || v_old.counts;
+    end if;
+    if not v_replace then
+      raise exception 'سبق ترحيل هذا الصف من ملفات مختلفة. اختر «استبدال الترحيل السابق» للمتابعة.' using errcode = '22023';
+    end if;
+  end if;
+
+  perform set_config('app.legacy_import', 'on', true);
+  perform set_config('app.status_rpc', 'on', true);
+
+  if v_old.id is not null then
+    delete from public.subjects where legacy_import_id = v_old.id;
+  end if;
+
+  -- لا يُرحَّل فوق درجات مُدخلة في النظام الحالي
+  if exists (select 1 from public.subjects s join public.grades g on g.subject_id = s.id
+             where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage and s.shift = v_shift
+               and s.term = any (v_terms) and not s.legacy
+               and (g.cw_theory is not null or g.cw_practical is not null or g.final_practical is not null
+                    or g.final_theory is not null or g.special is not null)) then
+    raise exception 'يحتوي هذا الصف على درجات مُدخلة في النظام الحالي؛ لا يمكن الترحيل فوقها' using errcode = '22023';
+  end if;
+  -- المواد الفارغة المنشأة في النظام الحالي (مثلاً من الخطة الدراسية) تُستبدل بمواد النظام السابق بموافقة صريحة
+  if exists (select 1 from public.subjects s where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage
+             and s.shift = v_shift and s.term = any (v_terms) and not s.legacy) then
+    if not v_clear then
+      raise exception 'يحتوي هذا الصف على مواد منشأة في النظام الحالي. اختر «استبدال المواد الفارغة» للمتابعة.' using errcode = '22023';
+    end if;
+    with d as (
+      delete from public.subjects s where s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage
+         and s.shift = v_shift and s.term = any (v_terms) and not s.legacy
+      returning 1)
+    select count(*) into v_cleared from d;
+  end if;
+
+  insert into public.legacy_imports as li (year_id, department_id, stage, shift, checksum, files, report, imported_by, imported_by_name)
+  values (v_year, v_dept, v_stage, v_shift, p->>'checksum', coalesce(p->'files', '[]'), p->'report', auth.uid(),
+          (select full_name from public.profiles where id = auth.uid()))
+  on conflict (year_id, department_id, stage, shift) do update set
+    checksum = excluded.checksum, files = excluded.files, report = excluded.report,
+    imported_at = now(), imported_by = excluded.imported_by, imported_by_name = excluded.imported_by_name
+  returning id into v_batch;
+
+  -- الطلبة: يُطابَق الطالب الموجود بالرقم الجامعي ثم بالاسم، وإلا يُضاف بتسلسل النظام السابق
+  for v_x in select e.value from jsonb_array_elements(coalesce(p->'students', '[]')) e
+             order by (e.value->>'seq')::int nulls last loop
+    v_name := regexp_replace(trim(coalesce(v_x->>'full_name', '')), '\s+', ' ', 'g');
+    if v_name = '' or coalesce(v_x->>'key', '') = '' then
+      raise exception 'بيانات طالب غير صالحة في ملف الترحيل' using errcode = '22023';
+    end if;
+    if v_stu ? (v_x->>'key') then
+      raise exception 'الطالب مكرر في ملف الترحيل: %', v_name using errcode = '22023';
+    end if;
+    select st.id into v_id from public.students st
+     where st.year_id = v_year and st.department_id = v_dept and st.stage = v_stage and st.shift = v_shift
+       and ((nullif(v_x->>'student_no', '') is not null and st.student_no = v_x->>'student_no') or st.full_name = v_name)
+     order by (st.student_no is not distinct from nullif(v_x->>'student_no', '')) desc
+     limit 1;
+    if v_id is null then
+      select coalesce(max(seq), 0) + 1 into v_seq from public.students
+       where year_id = v_year and department_id = v_dept and stage = v_stage and shift = v_shift;
+      insert into public.students (year_id, department_id, stage, shift, seq, full_name, student_no, gender, notes, legacy_import_id)
+      values (v_year, v_dept, v_stage, v_shift, v_seq, v_name, nullif(v_x->>'student_no', ''), nullif(v_x->>'gender', ''),
+              nullif(trim(coalesce(v_x->>'notes', '')), ''), v_batch)
+      returning id into v_id;
+      v_added := v_added + 1;
+    else
+      update public.students set student_no = coalesce(student_no, nullif(v_x->>'student_no', '')),
+                                 gender = coalesce(gender, nullif(v_x->>'gender', ''))
+       where id = v_id;
+      v_matched := v_matched + 1;
+    end if;
+    v_stu := v_stu || jsonb_build_object(v_x->>'key', v_id);
+  end loop;
+
+  -- المواد: معتمدة في الدورين لأنها نتائج نهائية من النظام السابق
+  for v_x in select e.value from jsonb_array_elements(coalesce(p->'subjects', '[]')) e loop
+    if coalesce(v_x->>'key', '') = '' or v_sub ? (v_x->>'key') or not ((v_x->>'term')::smallint = any (v_terms)) then
+      raise exception 'بيانات مادة غير صالحة في ملف الترحيل: %', v_x->>'name' using errcode = '22023';
+    end if;
+    insert into public.subjects (year_id, department_id, stage, shift, term, name, code, units,
+                                 coursework_max, cw_practical_max, practical_max,
+                                 status, submitted_at, reviewed_at, reviewed_by,
+                                 r2_status, r2_submitted_at, r2_reviewed_at, r2_reviewed_by,
+                                 sort, legacy, legacy_meta, r2_deduction, legacy_import_id)
+    values (v_year, v_dept, v_stage, v_shift, (v_x->>'term')::smallint,
+            regexp_replace(trim(v_x->>'name'), '\s+', ' ', 'g'), nullif(trim(coalesce(v_x->>'code', '')), ''),
+            (v_x->>'units')::numeric, coalesce((v_x->>'coursework_max')::numeric, 40), 0, 0,
+            'approved', now(), now(), auth.uid(), 'approved', now(), now(), auth.uid(),
+            coalesce((v_x->>'sort')::int, 0), true, v_x->'meta', (v_x->>'r2_deduction')::numeric, v_batch)
+    returning id into v_id;
+    v_sub := v_sub || jsonb_build_object(v_x->>'key', v_id);
+    v_subjects := v_subjects + 1;
+  end loop;
+
+  if exists (select 1 from jsonb_array_elements(coalesce(p->'grades', '[]')) x
+             where not (v_sub ? (x.value->>'subject')) or not (v_stu ? (x.value->>'student'))) then
+    raise exception 'سجل درجة يشير إلى مادة أو طالب غير موجود في ملف الترحيل' using errcode = '22023';
+  end if;
+  insert into public.grades (subject_id, student_id, cw_theory, final_theory, decision, special, note,
+                             r2_final_theory, r2_decision, r2_special, final_override, legacy)
+  select (v_sub->>x.subject)::uuid, (v_stu->>x.student)::uuid, x.cw_theory, x.final_theory, x.decision,
+         nullif(x.special, ''), nullif(trim(coalesce(x.note, '')), ''),
+         x.r2_final_theory, x.r2_decision, nullif(x.r2_special, ''), x.final_override, x.legacy
+  from jsonb_to_recordset(coalesce(p->'grades', '[]')) as x(subject text, student text, cw_theory numeric, final_theory numeric,
+       decision numeric, special text, note text, r2_final_theory numeric, r2_decision numeric, r2_special text,
+       final_override numeric, legacy jsonb);
+  get diagnostics v_grades = row_count;
+
+  -- طلبة ترحيل سابق لم يعودوا ضمن الملفات ولا درجات لهم
+  delete from public.students st where st.legacy_import_id = v_batch
+     and not exists (select 1 from jsonb_each_text(v_stu) e where e.value::uuid = st.id)
+     and not exists (select 1 from public.grades g where g.student_id = st.id);
+
+  update public.legacy_imports set counts = jsonb_build_object(
+      'students', v_added + v_matched, 'students_added', v_added, 'students_matched', v_matched,
+      'subjects', v_subjects, 'grades', v_grades, 'cleared_subjects', v_cleared)
+   where id = v_batch;
+  perform public.write_audit('legacy.import', 'class', v_batch::text, v_dept,
+    'ترحيل بيانات النظام السابق — ' || v_dept_name || ' — المرحلة ' || v_stage || ' — '
+      || case v_shift when 'morning' then 'صباحي' else 'مسائي' end || ' — ' || v_label,
+    jsonb_build_object('year', v_label, 'stage', v_stage, 'shift', v_shift, 'files', p->'files',
+                       'students', v_added + v_matched, 'subjects', v_subjects, 'grades', v_grades,
+                       'replaced', v_old.id is not null, 'cleared_subjects', v_cleared));
+  return jsonb_build_object('status', case when v_old.id is null then 'imported' else 'replaced' end, 'batch_id', v_batch,
+                            'students', v_added + v_matched, 'students_added', v_added, 'students_matched', v_matched,
+                            'subjects', v_subjects, 'grades', v_grades, 'cleared_subjects', v_cleared);
+end $$;
+
+-- التراجع عن ترحيل صف: حذف مواده ودرجاته، والطلبة الذين أنشأهم الترحيل ولا درجات أخرى لهم
+create or replace function public.undo_legacy_import(p_id uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v public.legacy_imports;
+  v_dept_name text;
+begin
+  if coalesce(public.my_role() in ('admin','dean'), false) is not true then
+    raise exception 'التراجع عن الترحيل من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+  end if;
+  select * into v from public.legacy_imports where id = p_id;
+  if not found then raise exception 'عملية الترحيل غير موجودة' using errcode = '22023'; end if;
+  perform set_config('app.legacy_import', 'on', true);
+  delete from public.subjects where legacy_import_id = p_id;
+  delete from public.students st where st.legacy_import_id = p_id
+     and not exists (select 1 from public.grades g where g.student_id = st.id);
+  delete from public.legacy_imports where id = p_id;
+  select name into v_dept_name from public.departments where id = v.department_id;
+  perform public.write_audit('legacy.undo', 'class', p_id::text, v.department_id,
+    'التراجع عن ترحيل — ' || coalesce(v_dept_name, '') || ' — المرحلة ' || v.stage || ' — '
+      || case v.shift when 'morning' then 'صباحي' else 'مسائي' end || ' — '
+      || coalesce((select label from public.academic_years where id = v.year_id), ''),
+    jsonb_build_object('counts', v.counts, 'files', v.files));
+end $$;
+
 -- ---------------------------------------------------------------------
 -- 7) إدارة الحسابات
 --    اسم المستخدم يُحوَّل داخلياً إلى بريد وهمي: username@exam.local
@@ -1189,7 +1499,10 @@ begin
                'r2_approved', s.status = 'approved' and s.r2_status = 'approved',
                'r2_special', case when s.status = 'approved' and s.r2_status = 'approved' then g.r2_special end,
                'r2_total', case when s.status = 'approved' and s.r2_status = 'approved' then public.grade_r2_total(s, g) end,
-               'r2_passed', case when s.status = 'approved' and s.r2_status = 'approved' then public.grade_r2_passed(s, g) end
+               'r2_passed', case when s.status = 'approved' and s.r2_status = 'approved' then public.grade_r2_passed(s, g) end,
+               'override', case when s.status = 'approved' then g.final_override end,
+               'by_decision', s.status = 'approved' and coalesce(g.decision, 0) > 0,
+               'r2_by_decision', s.status = 'approved' and s.r2_status = 'approved' and coalesce(g.r2_decision, 0) > 0
              ) order by s.term, s.sort, s.name)
       from public.subjects s
       left join public.grades g on g.subject_id = s.id and g.student_id = v_st.id
@@ -1347,6 +1660,10 @@ alter table public.grades         enable row level security;
 alter table public.audit_log      enable row level security;
 alter table public.curriculum     enable row level security;
 alter table public.announcements  enable row level security;
+alter table public.legacy_imports enable row level security;
+
+drop policy if exists legacy_imports_read on public.legacy_imports;
+create policy legacy_imports_read on public.legacy_imports for select to authenticated using (public.is_super());
 
 drop policy if exists departments_read on public.departments;
 create policy departments_read on public.departments for select to authenticated using (true);
@@ -1449,8 +1766,8 @@ grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.departments, public.academic_years, public.students,
   public.subjects, public.grades, public.curriculum, public.announcements to authenticated;
 grant select, update on public.settings to authenticated;
-grant select on public.profiles, public.audit_log, public.subject_progress to authenticated;
-revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
+grant select on public.profiles, public.audit_log, public.subject_progress, public.legacy_imports to authenticated;
+revoke insert, update, delete on public.profiles, public.audit_log, public.legacy_imports from authenticated;
 
 revoke execute on all functions in schema public from public, anon;
 revoke execute on function public._create_user(text, text, text, text, uuid, text) from authenticated;
@@ -1479,7 +1796,10 @@ grant execute on function
   public.delete_account(uuid),
   public.change_my_password(text, text),
   public.set_teacher_departments(uuid, uuid[]),
-  public.verify_result(text)
+  public.verify_result(text),
+  public.legacy_mode(),
+  public.import_legacy_class(jsonb),
+  public.undo_legacy_import(uuid)
 to authenticated;
 
 -- صفحة التحقق من النتيجة عامة: يستطيع أي شخص يحمل رمز النتيجة التحقق منها دون حساب

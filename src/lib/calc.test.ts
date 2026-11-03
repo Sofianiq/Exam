@@ -24,6 +24,7 @@ const settings: Settings = {
   current_year_id: null,
   second_round_cap: null,
   max_failed_subjects: 2,
+  second_round_deduction: 0,
 }
 
 // نفس توزيع سجل الدرجات الأصلي: السعي 40 (25 نظري + 15 عملي) + العملي النهائي 25 + النظري النهائي 35
@@ -174,6 +175,40 @@ describe('second round (coursework fixed)', () => {
   })
 })
 
+describe('decision marks, round-2 deduction and overrides (legacy rules)', () => {
+  const ded = { ...settings, second_round_deduction: 10 }
+  const legacy = { coursework_max: 40, cw_practical_max: 0, practical_max: 0, final_max: 60 }
+  it('adds decision marks to the total and flags the pass as «بقرار»', () => {
+    const r = computeRow(legacy, { cw_theory: 30, final_theory: 17, decision: 3 }, settings)
+    expect(r).toMatchObject({ total: 50, passed: true, finalPassed: true, decision: 3, byDecision: true })
+    const plain = computeRow(legacy, { cw_theory: 30, final_theory: 25 }, settings)
+    expect(plain).toMatchObject({ total: 55, byDecision: false, decision: null })
+  })
+  it('deducts 10 marks from round-2 passers without going below the pass mark', () => {
+    const base = { cw_theory: 20, final_theory: 10 }
+    expect(computeRow(legacy, { ...base, r2_final_theory: 50 }, ded)).toMatchObject({ r2Raw: 70, r2Total: 60, finalTotal: 60, finalPassed: true })
+    expect(computeRow(legacy, { ...base, r2_final_theory: 35 }, ded)).toMatchObject({ r2Raw: 55, r2Total: 50, finalTotal: 50 })
+    // الراسب في الدور الثاني لا يُخصم منه
+    expect(computeRow(legacy, { ...base, r2_final_theory: 20 }, ded)).toMatchObject({ r2Raw: 40, r2Total: 40, finalPassed: false })
+    // خصم خاص بالمادة يتقدم على الإعداد العام
+    expect(computeRow({ ...legacy, r2_deduction: 0 }, { ...base, r2_final_theory: 50 }, ded).finalTotal).toBe(70)
+  })
+  it('does not deduct from postponed students (their round 2 counts as round 1)', () => {
+    const r = computeRow(legacy, { cw_theory: 20, special: 'postponed', r2_final_theory: 50 }, ded)
+    expect(r).toMatchObject({ r2Total: 70, finalTotal: 70, finalRound: 2 })
+  })
+  it('applies round-2 decision marks and the deduction to absent/banned students', () => {
+    const r = computeRow(legacy, { cw_theory: 20, special: 'banned', r2_final_theory: 28, r2_decision: 2 }, ded)
+    expect(r).toMatchObject({ r2Raw: 50, r2Total: 50, finalPassed: true, byDecision: true, decision: 2 })
+  })
+  it('uses a fixed final mark (settlement) over the computed one', () => {
+    const r = computeRow(legacy, { cw_theory: 20, final_theory: 10, final_override: 64 }, ded)
+    expect(r).toMatchObject({ total: 30, finalTotal: 64, finalPassed: true, overridden: true, finalLabel: 'متوسط' })
+    const z = computeRow(legacy, { special: 'absent', final_override: 0 }, ded)
+    expect(z).toMatchObject({ finalTotal: 0, finalSpecial: null, finalPassed: false })
+  })
+})
+
 describe('student result', () => {
   const R = (finalTotal: number | null, opts: Partial<RowResult> = {}): RowResult =>
     ({
@@ -205,11 +240,28 @@ describe('student result', () => {
     expect(s.status).toBe('carry')
     expect(s.statusText).toBe('مكمل في: المادة ب، المادة ج')
   })
-  it('marks راسب when failing more than two subjects', () => {
+  it('keeps the student مكمل after round 1 whatever the number of failed subjects (as in the previous system)', () => {
     const four = [...subs, { name: 'المادة د', units: 1 }]
     const s = summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings)
-    expect(s.status).toBe('fail')
-    expect(s.statusText).toBe('راسب')
+    expect(s.status).toBe('carry')
+    expect(s.statusText).toBe('مكمل في: المادة أ، المادة ب، المادة ج')
+  })
+  it('decides راسب / ناجح بالتحميل only after round 2', () => {
+    const still = (t: number) => R(t, { needsR2: true, r2Complete: true, finalPassed: false })
+    const four = [...subs, { name: 'المادة د', units: 1 }]
+    // فصل دراسي: أي رسوب بعد الدور الثاني = راسب
+    expect(summarizeStudent(subs, [still(40), R(70), R(90)], settings).status).toBe('fail')
+    // النتيجة السنوية: مادتان أو أقل = ناجح بالتحميل
+    const two = summarizeStudent(four, [still(40), still(30), R(70), R(90)], settings, 'annual')
+    expect(two.status).toBe('pass_carry')
+    expect(two.statusText).toBe('ناجح بالتحميل (المادة أ، المادة ب)')
+    // أكثر من الحد = راسب
+    expect(summarizeStudent(four, [still(40), still(30), still(20), R(90)], settings, 'annual').status).toBe('fail')
+    expect(summarizeStudent(four, [still(40), still(30), still(20), R(90)], { ...settings, max_failed_subjects: 3 }, 'annual').status).toBe('pass_carry')
+  })
+  it('labels students who passed by decision marks', () => {
+    const s = summarizeStudent(subs, [R(80), R(50, { byDecision: true }), R(90)], settings)
+    expect(s).toMatchObject({ status: 'pass', statusText: 'ناجح بقرار', byDecision: ['المادة ب'] })
   })
   it('passes after round 2 when the carried subjects are passed', () => {
     const viaR2 = R(60, { needsR2: true, r2Complete: true, finalRound: 2 })

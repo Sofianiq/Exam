@@ -1,6 +1,6 @@
 import type { GradeBand, GradeComponent, GradeValues, R2Component, Rounding, Settings, SpecialCode, Subject } from './types'
 
-export type Scheme = Pick<Subject, 'coursework_max' | 'cw_practical_max' | 'practical_max' | 'final_max'> & Partial<Pick<Subject, 'final_min'>>
+export type Scheme = Pick<Subject, 'coursework_max' | 'cw_practical_max' | 'practical_max' | 'final_max'> & Partial<Pick<Subject, 'final_min' | 'r2_deduction'>>
 
 export interface ComponentDef {
   key: GradeComponent
@@ -101,9 +101,17 @@ export interface RowResult {
   finalLabel: string | null
   finalPassed: boolean | null
   finalBelowMin: boolean
+  /** درجات القرار المستخدمة في الدور الذي حُسمت به المادة */
+  decision: number | null
+  /** نجح بقرار: لولا درجات القرار لما بلغ درجة النجاح */
+  byDecision: boolean
+  /** مجموع الدور الثاني قبل الخصم */
+  r2Raw: number | null
+  /** الدرجة النهائية مثبتة يدوياً (تسوية) */
+  overridden: boolean
 }
 
-type CalcSettings = Pick<Settings, 'pass_mark' | 'rounding' | 'grade_scale'> & Partial<Pick<Settings, 'second_round_cap'>>
+type CalcSettings = Pick<Settings, 'pass_mark' | 'rounding' | 'grade_scale'> & Partial<Pick<Settings, 'second_round_cap' | 'second_round_deduction'>>
 
 export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined, settings: CalcSettings): RowResult {
   const comps = componentsOf(subject)
@@ -120,9 +128,11 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
   const finalSum = sumGroup('final')
   const special = v?.special ?? null
   const complete = special != null || missing.length === 0
+  const dec1 = v?.decision ?? 0
+  const dec2 = v?.r2_decision ?? 0
   let total: number | null = null
   if (special == null && missing.length === 0 && coursework != null && finalSum != null) {
-    total = applyRounding(coursework + finalSum, settings.rounding)
+    total = applyRounding(coursework + finalSum + dec1, settings.rounding)
   }
   // المادة التقويمية (الوزارية): يُشترط بلوغ الحد الأدنى في الامتحان النهائي إضافة إلى درجة النجاح
   const minOk = (fin: number | null) => subject.final_min == null || (fin ?? 0) >= subject.final_min
@@ -137,17 +147,27 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
   const r2FinalSum = sumGroup('final', 2)
   const hasR2Values = comps.some((c) => c.group === 'final' && val(R2_OF[c.key] as R2Component) != null)
   let r2Total: number | null = null
+  let r2Raw: number | null = null
   if (r2Special == null && coursework != null && r2FinalSum != null && hasR2Values) {
-    const cap = special === 'postponed' ? 100 : (settings.second_round_cap ?? 100)
-    r2Total = Math.min(applyRounding(coursework + r2FinalSum, settings.rounding), cap)
+    // المؤجل بعذر: دوره الثاني يُعد دوراً أول فلا خصم ولا سقف
+    const postponed = special === 'postponed'
+    const cap = postponed ? 100 : (settings.second_round_cap ?? 100)
+    const deduction = postponed ? 0 : (subject.r2_deduction ?? settings.second_round_deduction ?? 0)
+    r2Raw = applyRounding(coursework + r2FinalSum + dec2, settings.rounding)
+    // يُخصم من الناجح في الدور الثاني فقط، على ألا تقل درجته عن درجة النجاح
+    const passes = r2Raw >= settings.pass_mark && minOk(r2FinalSum)
+    const afterDeduction = passes && deduction > 0 ? Math.max(settings.pass_mark, round2(r2Raw - deduction)) : r2Raw
+    r2Total = Math.min(afterDeduction, cap)
   }
   const r2Complete = r2Special != null || r2Total != null
   const useR2 = needsR2 && r2Complete
-  const finalTotal = useR2 ? r2Total : total
-  const finalSpecial = useR2 ? r2Special : special
-  const r2BelowMin = r2Total != null && r2Total >= settings.pass_mark && !minOk(r2FinalSum)
-  const finalBelowMin = useR2 ? r2BelowMin : belowFinalMin
+  const override = v?.final_override ?? null
+  const finalTotal = override != null ? override : useR2 ? r2Total : total
+  const finalSpecial = override != null ? null : useR2 ? r2Special : special
+  const r2BelowMin = r2Raw != null && r2Raw >= settings.pass_mark && !minOk(r2FinalSum)
+  const finalBelowMin = override != null ? false : useR2 ? r2BelowMin : belowFinalMin
   const finalPassed = finalTotal != null ? finalTotal >= settings.pass_mark && !finalBelowMin : finalSpecial != null ? false : null
+  const usedDecision = useR2 ? dec2 : dec1
   return {
     coursework: comps.some((c) => c.group === 'coursework') ? coursework : null,
     finalSum: comps.some((c) => c.group === 'final') ? finalSum : null,
@@ -169,6 +189,10 @@ export function computeRow(subject: Scheme, v: Partial<GradeValues> | undefined,
     finalLabel: labelOf(finalTotal, finalPassed),
     finalPassed,
     finalBelowMin,
+    decision: usedDecision || null,
+    byDecision: finalPassed === true && usedDecision > 0,
+    r2Raw,
+    overridden: override != null,
   }
 }
 
@@ -207,7 +231,10 @@ export function rankDescending(values: (number | null)[]): (number | null)[] {
   return values.map((v) => (v == null ? null : values.filter((o) => o != null && o > v).length + 1))
 }
 
-export type ResultStatus = 'none' | 'incomplete' | 'pass' | 'pass_r2' | 'carry' | 'fail'
+export type ResultStatus = 'none' | 'incomplete' | 'pass' | 'pass_r2' | 'pass_carry' | 'carry' | 'fail'
+
+/** الحالات التي يدخل أصحابها في التسلسل (الترتيب) */
+export const RANKED_STATUSES: ResultStatus[] = ['pass', 'pass_r2', 'pass_carry']
 
 export interface StudentSummary {
   /** مجموع الدرجات النهائية لكل المواد */
@@ -223,6 +250,8 @@ export interface StudentSummary {
   finalFailed: string[]
   /** مواد ما زالت بانتظار نتيجة الدور الثاني */
   pendingR2: string[]
+  /** المواد المجتازة بدرجات القرار */
+  byDecision: string[]
   missing: number
   status: ResultStatus
   statusText: string
@@ -232,14 +261,17 @@ type SummarySettings = Pick<Settings, 'pass_mark' | 'average_mode' | 'grade_scal
 
 /**
  * نتيجة الطالب في مجموعة مواد (فصل أو سنة):
- * ناجح — أو مكمل (رسوب في عدد مواد لا يتجاوز الحد المسموح، مع ذكرها) — أو راسب (أكثر من الحد).
+ * - ناجح (أو ناجح بقرار إذا اجتاز مادة بدرجات القرار)
+ * - مكمل: رسب في مادة أو أكثر في الدور الأول وما زال الدور الثاني قائماً (مهما كان عدد المواد)
+ * - بعد الدور الثاني: ناجح، أو «ناجح بالتحميل» في النتيجة السنوية إذا لم تتجاوز المواد الراسبة حد التحميل، وإلا راسب
  */
 export function summarizeStudent(
   subjects: { name: string; units: number | null }[],
   results: RowResult[],
   settings: SummarySettings,
+  scope: 'term' | 'annual' = 'term',
 ): StudentSummary {
-  const maxFailed = settings.max_failed_subjects ?? 2
+  const maxCarry = settings.max_failed_subjects ?? 2
   const nums: { v: number; u: number }[] = []
   results.forEach((r, i) => {
     if (r.finalTotal != null) nums.push({ v: r.finalTotal, u: subjects[i]?.units && subjects[i].units! > 0 ? subjects[i].units! : 1 })
@@ -257,10 +289,12 @@ export function summarizeStudent(
   const name = (i: number) => subjects[i]?.name ?? ''
   const r1Failed = results.flatMap((r, i) => (r.complete && r.needsR2 ? [name(i)] : []))
   const finalFailed = results.flatMap((r, i) => (r.complete && r.finalPassed === false ? [name(i)] : []))
-  const pendingR2 = results.flatMap((r, i) => (r.needsR2 && !r.r2Complete ? [name(i)] : []))
-  const missing = results.filter((r) => !r.complete).length
+  const pendingR2 = results.flatMap((r, i) => (r.complete && r.needsR2 && !r.r2Complete && !r.overridden ? [name(i)] : []))
+  const byDecision = results.flatMap((r, i) => (r.byDecision ? [name(i)] : []))
+  const missing = results.filter((r) => !r.complete && !r.overridden).length
   const passedCount = results.filter((r) => r.finalPassed === true).length
-  const any = results.some((r) => r.complete)
+  const any = results.some((r) => r.complete || r.overridden)
+  const passText = (fallback: string) => (byDecision.length ? 'ناجح بقرار' : fallback)
 
   let status: ResultStatus = 'none'
   let statusText = ''
@@ -268,18 +302,15 @@ export function summarizeStudent(
   else if (missing > 0) {
     status = 'incomplete'
     statusText = `النتيجة غير مكتملة (${missing} ${missing === 1 ? 'مادة' : 'مواد'})`
-  } else if (r1Failed.length === 0) {
-    status = 'pass'
-    statusText = 'ناجح'
-  } else if (r1Failed.length > maxFailed) {
-    status = 'fail'
-    statusText = 'راسب'
+  } else if (finalFailed.length === 0) {
+    status = r1Failed.length === 0 ? 'pass' : 'pass_r2'
+    statusText = passText(r1Failed.length === 0 ? 'ناجح' : 'ناجح (الدور الثاني)')
   } else if (pendingR2.length > 0) {
     status = 'carry'
-    statusText = `مكمل في: ${r1Failed.join('، ')}`
-  } else if (finalFailed.length === 0) {
-    status = 'pass_r2'
-    statusText = 'ناجح (الدور الثاني)'
+    statusText = `مكمل في: ${finalFailed.join('، ')}`
+  } else if (scope === 'annual' && finalFailed.length <= maxCarry) {
+    status = 'pass_carry'
+    statusText = `ناجح بالتحميل (${finalFailed.join('، ')})`
   } else {
     status = 'fail'
     statusText = 'راسب'
@@ -293,6 +324,7 @@ export function summarizeStudent(
     r1Failed,
     finalFailed,
     pendingR2,
+    byDecision,
     missing,
     status,
     statusText,

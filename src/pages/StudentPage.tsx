@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, Printer } from 'lucide-react'
+import { ChevronLeft, History, Printer } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { classKeyOf, useGrades, useSubjects } from '../app/queries'
@@ -15,7 +15,7 @@ import { canSeeDepartment } from '../lib/perm'
 import { NotFoundPage } from './NotFoundPage'
 import { ScaledPreview } from './ResultsPage'
 
-export const STATUS_TONE = { pass: 'success', pass_r2: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
+export const STATUS_TONE = { pass: 'success', pass_r2: 'success', pass_carry: 'success', carry: 'warning', fail: 'danger', incomplete: 'neutral', none: 'neutral' } as const
 
 export function StudentPage() {
   const { studentId } = useParams()
@@ -73,7 +73,13 @@ export function StudentPage() {
           subtitle={
             <span className="flex flex-wrap items-center gap-2">
               قسم {dept?.name} — {stageLabel(student.stage)} — {SHIFT_LABEL[student.shift]} — {year}
+              {student.student_no && (
+                <span className="text-muted">
+                  — الرقم الجامعي: <span dir="ltr" className="tabular-nums">{student.student_no}</span>
+                </span>
+              )}
               {student.status !== 'active' && <Badge tone="warning">{STUDENT_STATUS_LABEL[student.status]}</Badge>}
+              {student.legacy_import_id && <Badge tone="info">مرحّل من النظام السابق</Badge>}
             </span>
           }
           actions={
@@ -113,6 +119,7 @@ export function StudentPage() {
           {report.sections.length === 0 && (
             <Card className="p-8 text-center text-sm text-muted">لا توجد مواد مسجلة لصف هذا الطالب بعد.</Card>
           )}
+          {student.student_no && <AcademicHistory studentNo={student.student_no} currentId={student.id} />}
         </div>
 
         {report.sections.length > 0 && (
@@ -167,15 +174,22 @@ function SectionDetails({ section }: { section: ReportSection }) {
                 <td className="text-center tabular-nums text-muted">{subject.units ?? '—'}</td>
                 <td className="text-center tabular-nums">{fmtNum(r.coursework)}</td>
                 <td className="text-center tabular-nums">{r.special ? <span className="text-warning">{SPECIAL_LABEL[r.special]}</span> : fmtNum(r.finalSum)}</td>
-                <td className={cx('text-center font-semibold tabular-nums', r.total != null && r.passed === false && 'text-danger')}>{fmtNum(r.total)}</td>
+                <td className={cx('text-center font-semibold tabular-nums', r.total != null && r.passed === false && 'text-danger')}>
+                  {fmtNum(r.total)}
+                  {r.finalRound === 1 && !!r.decision && <span className="ms-1 text-xs font-medium text-gold-text">(قرار +{fmtNum(r.decision)})</span>}
+                </td>
                 {anyR2 && (
                   <td className="text-center tabular-nums">
                     {r.complete && r.needsR2 ? (
                       r.r2Special ? (
                         <span className="text-warning">{SPECIAL_LABEL[r.r2Special]}</span>
                       ) : r.r2Total != null ? (
-                        <span className={cx('font-semibold', r.finalPassed === false ? 'text-danger' : 'text-success')}>
+                        <span
+                          className={cx('font-semibold', r.finalPassed === false ? 'text-danger' : 'text-success')}
+                          title={r.r2Raw != null && r.r2Raw !== r.r2Total ? `المجموع قبل خصم الدور الثاني: ${fmtNum(r.r2Raw)}` : undefined}
+                        >
                           {fmtNum(r.r2FinalSum)} ← {fmtNum(r.r2Total)}
+                          {r.finalRound === 2 && !!r.decision && <span className="ms-1 text-xs font-medium text-gold-text">(قرار +{fmtNum(r.decision)})</span>}
                         </span>
                       ) : (
                         <Badge tone="warning">بانتظار الدور الثاني</Badge>
@@ -187,6 +201,11 @@ function SectionDetails({ section }: { section: ReportSection }) {
                 )}
                 <td className={cx('text-center text-base font-bold tabular-nums', r.finalPassed === false && 'text-danger')}>
                   {r.finalSpecial ? <span className="text-sm text-warning">{SPECIAL_LABEL[r.finalSpecial]}</span> : fmtNum(r.finalTotal)}
+                  {r.overridden && (
+                    <span className="ms-1 align-middle text-[0.65rem] font-medium text-info" title="الدرجة النهائية مثبتة كما وردت من النظام السابق">
+                      مثبتة
+                    </span>
+                  )}
                 </td>
                 <td className={cx('text-center text-sm font-medium', r.finalPassed === false ? 'text-danger' : 'text-primary-text')}>{r.finalLabel}</td>
               </tr>
@@ -221,6 +240,67 @@ function SummaryCard({ title, summary }: { title: string; summary: StudentSummar
     <Card>
       <CardHeader title={title} />
       <SummaryBar summary={summary} />
+    </Card>
+  )
+}
+
+/** السجل الأكاديمي للطالب في كل السنوات (يربطها الرقم الجامعي) */
+function AcademicHistory({ studentNo, currentId }: { studentNo: string; currentId: string }) {
+  const s = useSession()
+  const q = useQuery({
+    queryKey: ['history', studentNo],
+    queryFn: async () => {
+      const records = await backend.findStudentsByNo(studentNo)
+      const rows = []
+      for (const st of records) {
+        const subjects = await backend.listSubjects({ year_id: st.year_id, department_id: st.department_id, stage: st.stage, shift: st.shift })
+        const grades = await backend.getGrades(subjects.map((x) => x.id))
+        const rep = buildStudentReport(subjects, grades, st.id, s.settings)
+        rows.push({ st, year: s.years.find((y) => y.id === st.year_id)?.label ?? '', annual: rep.annual, terms: rep.sections.length })
+      }
+      return rows.sort((a, b) => a.year.localeCompare(b.year) || a.st.stage - b.st.stage)
+    },
+  })
+  const rows = q.data ?? []
+  if (rows.length < 2) return null
+  return (
+    <Card>
+      <CardHeader title="السجل الأكاديمي" subtitle="نتائج الطالب في كل السنوات الدراسية (بالرقم الجامعي)" icon={<History className="size-5" />} />
+      <div className="overflow-x-auto">
+        <table className="table-base">
+          <thead>
+            <tr>
+              <th>السنة الدراسية</th>
+              <th>القسم والمرحلة</th>
+              <th className="text-center">المعدل السنوي</th>
+              <th className="text-center">النتيجة</th>
+              <th>المواد المحملة / الراسبة</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ st, year, annual }) => (
+              <tr key={st.id} className={cx(st.id === currentId && 'bg-primary-soft/40')}>
+                <td className="font-medium tabular-nums">
+                  <Link to={`/student/${st.id}`} className="hover:text-primary-text hover:underline">
+                    {yearLabel(year)}
+                  </Link>
+                </td>
+                <td>
+                  {s.deptById(st.department_id)?.name} — {stageLabel(st.stage)} — {SHIFT_LABEL[st.shift]}
+                </td>
+                <td className="text-center font-semibold tabular-nums">
+                  {fmtNum(annual.average) || '—'}
+                  {annual.averageLabel && <span className="ms-1 text-xs font-normal text-muted">({annual.averageLabel})</span>}
+                </td>
+                <td className="text-center">
+                  <Badge tone={STATUS_TONE[annual.status]}>{annual.statusText || '—'}</Badge>
+                </td>
+                <td className="text-sm text-muted">{annual.finalFailed.join('، ') || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   )
 }

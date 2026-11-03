@@ -17,8 +17,8 @@ import { NotFoundPage } from './NotFoundPage'
 
 type Filter = 'all' | 'pass' | 'carry' | 'fail' | 'incomplete'
 const MATCH: Record<Filter, ResultStatus[]> = {
-  all: ['pass', 'pass_r2', 'carry', 'fail', 'incomplete', 'none'],
-  pass: ['pass', 'pass_r2'],
+  all: ['pass', 'pass_r2', 'pass_carry', 'carry', 'fail', 'incomplete', 'none'],
+  pass: ['pass', 'pass_r2', 'pass_carry'],
   carry: ['carry'],
   fail: ['fail'],
   incomplete: ['incomplete', 'none'],
@@ -26,6 +26,7 @@ const MATCH: Record<Filter, ResultStatus[]> = {
 const STATUS_TONE: Record<ResultStatus, 'success' | 'warning' | 'danger' | 'neutral'> = {
   pass: 'success',
   pass_r2: 'success',
+  pass_carry: 'success',
   carry: 'warning',
   fail: 'danger',
   incomplete: 'neutral',
@@ -34,6 +35,7 @@ const STATUS_TONE: Record<ResultStatus, 'success' | 'warning' | 'danger' | 'neut
 const STATUS_SHORT: Record<ResultStatus, string> = {
   pass: 'ناجح',
   pass_r2: 'ناجح (د2)',
+  pass_carry: 'ناجح بالتحميل',
   carry: 'مكمل',
   fail: 'راسب',
   incomplete: 'غير مكتملة',

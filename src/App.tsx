@@ -24,6 +24,7 @@ import { ResultsBatchPage } from './pages/ResultsBatchPage'
 import { ResultsPage } from './pages/ResultsPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { MigrationPage } from './pages/MigrationPage'
 import { StudentPage } from './pages/StudentPage'
 import { StudentsSearchPage } from './pages/StudentsSearchPage'
 import { UsersPage } from './pages/UsersPage'
@@ -58,6 +59,7 @@ const router = createHashRouter([
       { path: 'users', element: <UsersPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'migration', element: <MigrationPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
