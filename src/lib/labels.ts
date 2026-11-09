@@ -69,6 +69,11 @@ export const ACTION_LABEL: Record<string, string> = {
   'report.export': 'تصدير تقرير',
   'report.print': 'طباعة تقرير',
   'backup.export': 'نسخة احتياطية',
+  'portal.publish': 'نشر في بوابة الطالب',
+  'portal.unpublish': 'سحب نشر من بوابة الطالب',
+  'portal.accounts': 'إنشاء حسابات الطلبة',
+  'portal.reset_code': 'إعادة تعيين رمز طالب',
+  'portal.settings': 'إعدادات بوابة الطالب',
   'legacy.import': 'ترحيل بيانات النظام السابق',
   'legacy.undo': 'التراجع عن ترحيل',
 }

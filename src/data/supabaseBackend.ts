@@ -1,6 +1,12 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { usernameToEmail } from '../lib/password'
 import type {
+  PortalCard,
+  PortalKind,
+  PortalOverview,
+  PortalPublishPayload,
+  PortalSettings,
+  PortalTerm,
   Announcement,
   AnnouncementInput,
   AcademicYear,
@@ -458,6 +464,40 @@ export class SupabaseBackend implements Backend {
       settings: { ...r.settings, pass_mark: Number(r.settings.pass_mark) },
       subjects: r.subjects.map((x) => ({ ...x, units: n(x.units), total: n(x.total), r2_total: n(x.r2_total), override: n(x.override) })),
     }
+  }
+
+  // ---------- بوابة الطالب ----------
+  async portalOverview(yearId: string): Promise<PortalOverview> {
+    return this.rpc<PortalOverview>('portal_overview', { p_year_id: yearId })
+  }
+
+  async portalSaveSettings(s: Pick<PortalSettings, 'enabled' | 'portal_url' | 'notice'> & { exam_url?: string | null }): Promise<void> {
+    await this.rpc('portal_save_settings', { p_enabled: s.enabled, p_portal_url: s.portal_url, p_exam_url: s.exam_url ?? null, p_notice: s.notice })
+  }
+
+  async portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }) {
+    return this.rpc<{ created: number; linked: number }>('portal_generate_accounts', {
+      p_year_id: k.year_id,
+      p_department_id: k.department_id,
+      p_stage: k.stage ?? null,
+      p_shift: k.shift ?? null,
+    })
+  }
+
+  async portalCards(k: ClassKey): Promise<PortalCard[]> {
+    return this.rpc<PortalCard[]>('portal_cards', { p_year_id: k.year_id, p_department_id: k.department_id, p_stage: k.stage, p_shift: k.shift })
+  }
+
+  async portalResetCode(studentId: string) {
+    return this.rpc<{ login_id: string; code: string }>('portal_reset_code', { p_student_id: studentId })
+  }
+
+  async portalPublish(p: PortalPublishPayload) {
+    return this.rpc<{ students: number }>('portal_publish', { p })
+  }
+
+  async portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void> {
+    await this.rpc('portal_unpublish', { p_year_id: k.year_id, p_department_id: k.department_id, p_stage: k.stage, p_shift: k.shift, p_term: term, p_kind: kind })
   }
 
   // ---------- الإعلانات ----------

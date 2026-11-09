@@ -17,6 +17,13 @@ import {
   belongsTo,
 } from '../lib/perm'
 import type {
+  PortalCard,
+  PortalKind,
+  PortalOverview,
+  PortalPublishPayload,
+  PortalSettings,
+  PortalTerm,
+  PortalChange,
   VerifiedResult,
   VerifiedSubject,
   Announcement,
@@ -390,6 +397,164 @@ export class DemoBackend implements Backend {
   }
 
   /** التحقق العام من النتيجة (بدون تسجيل دخول) — نفس منطق verify_result في قاعدة البيانات */
+  // ---------- بوابة الطالب (نفس قواعد دوال portal_* في قاعدة البيانات) ----------
+  private portalManage(p: Profile) {
+    return p.role === 'admin' || p.role === 'dean'
+  }
+
+  private portalCardsAllowed(p: Profile, deptId: string) {
+    return this.portalManage(p) || (p.role === 'head' && p.department_id === deptId)
+  }
+
+  private randomDigits(n: number) {
+    const b = crypto.getRandomValues(new Uint8Array(n))
+    return [...b].map((x) => x % 10).join('')
+  }
+
+  async portalOverview(yearId: string): Promise<PortalOverview> {
+    await wait(20)
+    const me = this.me()
+    if (!canViewAll(me) && me.role !== 'head') fail('ليست لديك صلاحية لتنفيذ هذه العملية.')
+    const mine = (deptId: string) => canViewAll(me) || me.department_id === deptId
+    const key = (k: { department_id: string; stage: number; shift: string }) => `${k.department_id}|${k.stage}|${k.shift}`
+    const classes = new Map<string, PortalOverview['classes'][number]>()
+    for (const st of this.db.students) {
+      if (st.year_id !== yearId || !mine(st.department_id)) continue
+      const k = key(st)
+      const c = classes.get(k) ?? { department_id: st.department_id, stage: st.stage, shift: st.shift, students: 0, accounts: 0, logged_in: 0 }
+      if (st.status === 'active') {
+        c.students++
+        const a = this.db.portal.accounts[st.id]
+        if (a) {
+          c.accounts++
+          if (a.last_login_at) c.logged_in++
+        }
+      }
+      classes.set(k, c)
+    }
+    const changes = new Map<string, PortalChange>()
+    const lastGrade = new Map<string, string>()
+    for (const g of this.db.grades) if ((lastGrade.get(g.subject_id) ?? '') < g.updated_at) lastGrade.set(g.subject_id, g.updated_at)
+    for (const s of this.db.subjects) {
+      if (s.year_id !== yearId || !mine(s.department_id)) continue
+      const k = `${key(s)}|${s.term}`
+      const c = changes.get(k) ?? { department_id: s.department_id, stage: s.stage, shift: s.shift, term: s.term, subjects: 0, approved: 0, changed_at: null }
+      c.subjects++
+      if (s.status === 'approved') c.approved++
+      for (const at of [lastGrade.get(s.id), s.reviewed_at, s.r2_reviewed_at]) if (at && (!c.changed_at || at > c.changed_at)) c.changed_at = at
+      changes.set(k, c)
+    }
+    return clone({
+      settings: this.db.portal.settings,
+      classes: [...classes.values()],
+      publications: this.db.portal.publications.filter((p) => p.year_id === yearId && mine(p.department_id)),
+      changes: [...changes.values()],
+    })
+  }
+
+  async portalSaveSettings(s: Pick<PortalSettings, 'enabled' | 'portal_url' | 'notice'> & { exam_url?: string | null }): Promise<void> {
+    await wait()
+    if (!this.portalManage(this.me())) fail('إدارة بوابة الطالب من صلاحية مدير النظام أو العميد فقط')
+    const cur = this.db.portal.settings
+    this.db.portal.settings = { enabled: s.enabled, portal_url: s.portal_url?.trim() || null, exam_url: s.exam_url?.trim() || cur.exam_url, notice: s.notice?.trim() || null }
+    this.audit('portal.settings', 'portal', null, null, s.enabled ? 'تحديث إعدادات بوابة الطالب' : 'إيقاف بوابة الطالب مؤقتاً')
+    this.persist()
+  }
+
+  async portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }) {
+    await wait(80)
+    if (!this.portalCardsAllowed(this.me(), k.department_id)) fail('ليست لديك صلاحية إنشاء حسابات الطلبة لهذا القسم')
+    const used = new Set(Object.values(this.db.portal.accounts).map((a) => a.login_id))
+    let created = 0
+    for (const st of this.db.students) {
+      if (st.year_id !== k.year_id || st.department_id !== k.department_id || st.status !== 'active') continue
+      if ((k.stage && st.stage !== k.stage) || (k.shift && st.shift !== k.shift) || this.db.portal.accounts[st.id]) continue
+      let login = ''
+      do login = `${1 + (crypto.getRandomValues(new Uint8Array(1))[0] % 9)}${this.randomDigits(6)}`
+      while (used.has(login))
+      used.add(login)
+      this.db.portal.accounts[st.id] = { login_id: login, code: this.randomDigits(8), changed: false, last_login_at: null, login_count: 0 }
+      created++
+    }
+    if (created) this.audit('portal.accounts', 'portal', null, k.department_id, `إنشاء حسابات بوابة الطالب: ${created} حساب جديد`, { ...k, created, linked: 0 })
+    this.persist()
+    return { created, linked: 0 }
+  }
+
+  async portalCards(k: ClassKey): Promise<PortalCard[]> {
+    await wait(20)
+    if (!this.portalCardsAllowed(this.me(), k.department_id)) fail('ليست لديك صلاحية عرض بطاقات هذا القسم')
+    return this.db.students
+      .filter((st) => sameClass(st, k) && st.status === 'active' && this.db.portal.accounts[st.id])
+      .sort((a, b) => a.seq - b.seq)
+      .map((st) => {
+        const a = this.db.portal.accounts[st.id]
+        return { student_id: st.id, seq: st.seq, full_name: st.full_name, login_id: a.login_id, code: a.code, changed: a.changed, last_login_at: a.last_login_at, login_count: a.login_count }
+      })
+  }
+
+  async portalResetCode(studentId: string) {
+    await wait()
+    const st = this.db.students.find((x) => x.id === studentId)
+    const a = st && this.db.portal.accounts[st.id]
+    if (!st || !a) return fail('لا يوجد حساب بوابة لهذا الطالب')
+    if (!this.portalCardsAllowed(this.me(), st.department_id)) fail('ليست لديك صلاحية إعادة تعيين رمز هذا الطالب')
+    a.code = this.randomDigits(8)
+    a.changed = false
+    this.audit('portal.reset_code', 'student', st.id, st.department_id, `إعادة تعيين رمز بوابة الطالب — ${st.full_name}`)
+    this.persist()
+    return { login_id: a.login_id, code: a.code }
+  }
+
+  async portalPublish(p: PortalPublishPayload) {
+    await wait(120)
+    const me = this.me()
+    if (!this.portalManage(me)) fail('النشر في بوابة الطالب من صلاحية مدير النظام أو العميد فقط')
+    const deptName = this.dept(p.department_id)?.name ?? fail('بيانات النشر غير صالحة')
+    if ((p.kind === 'coursework' && p.term === 0) || ![0, 1, 2].includes(p.term)) fail('بيانات النشر غير صالحة')
+    const ids = new Set(this.db.students.filter((st) => sameClass(st, p)).map((st) => st.id))
+    if (p.snapshots.some((x) => !ids.has(x.student_id))) fail('النشر يتضمن طالباً ليس من هذا الصف')
+    const same = (x: { department_id: string; stage: number; shift: string; year_id: string; term: number; kind: string }) =>
+      sameClass(x as ClassKey, p) && x.term === p.term && x.kind === p.kind
+    this.db.portal.publications = [
+      ...this.db.portal.publications.filter((x) => !same(x)),
+      {
+        year_id: p.year_id,
+        department_id: p.department_id,
+        stage: p.stage,
+        shift: p.shift,
+        term: p.term,
+        kind: p.kind,
+        students: p.snapshots.length,
+        published_at: new Date().toISOString(),
+        published_by_name: me.full_name,
+      },
+    ]
+    if (p.exam_url) this.db.portal.settings.exam_url = p.exam_url
+    const what = `${p.kind === 'coursework' ? 'السعي' : 'النتيجة'} — ${p.term === 0 ? 'السنوية' : p.term === 1 ? 'الفصل الأول' : 'الفصل الثاني'}`
+    this.audit('portal.publish', 'portal', null, p.department_id, `نشر في بوابة الطالب: ${what} — ${deptName} — المرحلة ${p.stage} — ${SHIFT_LABEL[p.shift]}`, {
+      stage: p.stage,
+      shift: p.shift,
+      term: p.term,
+      kind: p.kind,
+      students: p.snapshots.length,
+    })
+    this.persist()
+    return { students: p.snapshots.length }
+  }
+
+  async portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void> {
+    await wait()
+    if (!this.portalManage(this.me())) fail('سحب النشر من صلاحية مدير النظام أو العميد فقط')
+    const before = this.db.portal.publications.length
+    this.db.portal.publications = this.db.portal.publications.filter((x) => !(sameClass(x, k) && x.term === term && x.kind === kind))
+    if (this.db.portal.publications.length < before) {
+      const what = `${kind === 'coursework' ? 'السعي' : 'النتيجة'} — ${term === 0 ? 'السنوية' : term === 1 ? 'الفصل الأول' : 'الفصل الثاني'}`
+      this.audit('portal.unpublish', 'portal', null, k.department_id, `سحب النشر من بوابة الطالب: ${what} — المرحلة ${k.stage}`, { ...k, term, kind })
+    }
+    this.persist()
+  }
+
   async verifyResult(code: string): Promise<VerifiedResult | null> {
     await wait(20)
     const c = code.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
@@ -968,6 +1133,7 @@ export class DemoBackend implements Backend {
       a.department_id == null ||
       belongsTo(p, a.department_id) ||
       this.db.subjects.some((s) => s.department_id === a.department_id && s.teacher_ids.includes(p.id))
+    if (a.audience === 'students') return false
     const who = a.audience === 'all' || (a.audience === 'teachers' && (p.role === 'teacher' || p.role === 'head')) || (a.audience === 'heads' && p.role === 'head')
     return dept && who
   }

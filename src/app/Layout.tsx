@@ -16,6 +16,7 @@ import {
   Menu,
   Moon,
   Settings as SettingsIcon,
+  Smartphone,
   UserSearch,
   Sun,
   Users,
@@ -31,7 +32,7 @@ import { isDemo } from '../data'
 import { displayName, yearLabel } from '../lib/format'
 import { ROLE_LABEL, SHIFT_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canEditSettings, canManageUsers, canReview, canSeeAudit, canToggleEntry, canViewAll } from '../lib/perm'
-import { isActive, useAnnouncements, useSeenAnnouncements } from './announcements'
+import { isActive, useAnnouncements, useSeenAnnouncements, isForStaff } from './announcements'
 import { useSubjects } from './queries'
 import { useInstallPrompt, useTheme } from './hooks'
 import { useSession } from './session'
@@ -57,7 +58,7 @@ export function Layout() {
   const pendingReview = reviewQ.data?.filter((p) => p.status === 'submitted' || (p.status === 'approved' && p.r2_status === 'submitted')).length ?? 0
   const annQ = useAnnouncements()
   const { seen } = useSeenAnnouncements(profile.id)
-  const unreadAnn = (annQ.data ?? []).filter((a) => isActive(a) && !seen.has(a.id)).length
+  const unreadAnn = (annQ.data ?? []).filter((a) => isActive(a) && isForStaff(a) && !seen.has(a.id)).length
 
   const items: NavItem[] = [{ to: '/', label: 'لوحة المتابعة', icon: <LayoutDashboard className="size-4.5" />, end: true }]
   items.push({ to: '/announcements', label: 'الإعلانات', icon: <Megaphone className="size-4.5" />, badge: unreadAnn })
@@ -70,6 +71,7 @@ export function Layout() {
   if (canReview(profile)) items.push({ to: '/review', label: 'التدقيق والاعتماد', icon: <ClipboardCheck className="size-4.5" />, badge: pendingReview })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/progress', label: 'تقرير الإنجاز', icon: <FileBarChart2 className="size-4.5" /> })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/statistics', label: 'إحصائيات اللجنة الامتحانية', icon: <BarChart3 className="size-4.5" /> })
+  if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/portal', label: 'بوابة الطلبة', icon: <Smartphone className="size-4.5" /> })
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })
   if (canManageUsers(profile)) items.push({ to: '/users', label: 'المستخدمون', icon: <Users className="size-4.5" /> })
   if (canSeeAudit(profile)) items.push({ to: '/audit', label: 'سجل العمليات', icon: <History className="size-4.5" /> })

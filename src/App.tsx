@@ -31,6 +31,7 @@ const StudentPage = lazy(() => import('./pages/StudentPage').then((m) => ({ defa
 const StudentsSearchPage = lazy(() => import('./pages/StudentsSearchPage').then((m) => ({ default: m.StudentsSearchPage })))
 const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })))
 const StatisticsPage = lazy(() => import('./pages/StatisticsPage').then((m) => ({ default: m.StatisticsPage })))
+const PortalPage = lazy(() => import('./pages/PortalPage').then((m) => ({ default: m.PortalPage })))
 const VerifyPage = lazy(() => import('./pages/VerifyPage').then((m) => ({ default: m.VerifyPage })))
 
 const queryClient = new QueryClient({
@@ -64,6 +65,7 @@ const router = createHashRouter([
           { path: 'announcements', element: <AnnouncementsPage /> },
           { path: 'progress', element: <ProgressPage /> },
           { path: 'statistics', element: <StatisticsPage /> },
+          { path: 'portal', element: <PortalPage /> },
           { path: 'control', element: <ControlPage /> },
           { path: 'users', element: <UsersPage /> },
           { path: 'audit', element: <AuditPage /> },

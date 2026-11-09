@@ -286,7 +286,7 @@ export type GradeComponent = 'cw_theory' | 'cw_practical' | 'final_practical' | 
 export type R2Component = 'r2_final_practical' | 'r2_final_theory'
 
 export type AnnouncementLevel = 'info' | 'important' | 'urgent'
-export type AnnouncementAudience = 'all' | 'teachers' | 'heads'
+export type AnnouncementAudience = 'all' | 'teachers' | 'heads' | 'students'
 
 export interface Announcement {
   id: string
@@ -333,4 +333,107 @@ export interface VerifiedResult {
   year: string | null
   settings: Pick<Settings, 'university_name' | 'college_name' | 'pass_mark' | 'grade_scale' | 'average_mode' | 'max_failed_subjects'>
   subjects: VerifiedSubject[]
+}
+
+// ---------------------------------------------------------------------
+// بوابة الطالب (تطبيق مستقل): الإدارة من نظام اللجنة
+// ---------------------------------------------------------------------
+
+export interface PortalSettings {
+  enabled: boolean
+  /** رابط تطبيق بوابة الطالب (يُطبع في البطاقات ورمز QR) */
+  portal_url: string | null
+  /** رابط نظام اللجنة (لصفحة التحقق من النتيجة) */
+  exam_url: string | null
+  /** رسالة تظهر للطلبة في الصفحة الرئيسية للبوابة */
+  notice: string | null
+}
+
+export type PortalKind = 'coursework' | 'results'
+/** 0 = النتيجة السنوية */
+export type PortalTerm = 0 | 1 | 2
+
+export interface PortalClassInfo {
+  department_id: string
+  stage: number
+  shift: Shift
+  students: number
+  accounts: number
+  logged_in: number
+}
+
+export interface PortalPublication {
+  year_id: string
+  department_id: string
+  stage: number
+  shift: Shift
+  term: PortalTerm
+  kind: PortalKind
+  students: number
+  published_at: string
+  published_by_name: string | null
+}
+
+/** حالة مواد كل صف وفصل: عددها، المعتمد منها، وآخر تعديل على درجاتها */
+export interface PortalChange {
+  department_id: string
+  stage: number
+  shift: Shift
+  term: Term
+  subjects: number
+  approved: number
+  changed_at: string | null
+}
+
+export interface PortalOverview {
+  settings: PortalSettings
+  classes: PortalClassInfo[]
+  publications: PortalPublication[]
+  changes: PortalChange[]
+}
+
+export interface PortalCard {
+  student_id: string
+  seq: number
+  full_name: string
+  login_id: string
+  /** الرمز المطبوع؛ null إذا غيّره الطالب */
+  code: string | null
+  changed: boolean
+  last_login_at: string | null
+  login_count: number
+}
+
+/** سعي الطالب كما يُنشر: مجموع السعي لكل مادة فقط (دون تفصيل النظري والعملي) */
+export interface PortalCourseworkSnapshot {
+  v: 1
+  subjects: { name: string; units: number | null; cw: number | null; max: number }[]
+}
+
+/** نتيجة الطالب كما تُنشر: التقديرات والحالة فقط (دون درجات) */
+export interface PortalResultSnapshot {
+  v: 1
+  scope: PortalTerm
+  sections: {
+    term: Term
+    label: string | null
+    units: number
+    rows: { name: string; units: number | null; label: string; note: string; tone: 'ok' | 'carry' | 'fail' | 'muted' }[]
+  }[]
+  overallLabel: string | null
+  units: number
+  status: string
+  statusText: string
+  failedTitle: string
+  failed: string[]
+  round: string
+  /** ترتيب الطالب إذا كان ضمن العشرة الأوائل الناجحين */
+  rank: number | null
+}
+
+export interface PortalPublishPayload extends ClassKey {
+  term: PortalTerm
+  kind: PortalKind
+  exam_url?: string | null
+  snapshots: { student_id: string; data: PortalCourseworkSnapshot | PortalResultSnapshot }[]
 }

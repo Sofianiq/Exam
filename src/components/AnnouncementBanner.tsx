@@ -1,6 +1,6 @@
 import { Megaphone, X } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
-import { isActive, useAnnouncements, useSeenAnnouncements } from '../app/announcements'
+import { isActive, useAnnouncements, useSeenAnnouncements, isForStaff } from '../app/announcements'
 import { useSession } from '../app/session'
 import { cx } from './ui'
 
@@ -14,7 +14,7 @@ export function AnnouncementBanner() {
   // العاجل أولاً ثم المهم، والأحدث أولاً
   const rank = { urgent: 0, important: 1, info: 2 } as const
   const unread = (q.data ?? [])
-    .filter((a) => isActive(a) && a.level !== 'info' && !seen.has(a.id))
+    .filter((a) => isActive(a) && isForStaff(a) && a.level !== 'info' && !seen.has(a.id))
     .sort((x, y) => rank[x.level] - rank[y.level] || y.created_at.localeCompare(x.created_at))
   const a = unread[0]
   if (!a) return null
