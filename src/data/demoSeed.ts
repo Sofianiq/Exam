@@ -2,6 +2,8 @@
 import plansJson from './plans.json'
 import { computeRow, cwTheoryMax, finalMaxOf } from '../lib/calc'
 import type {
+  PortalPublication,
+  PortalSettings,
   Announcement,
   AcademicYear,
   AuditEntry,
@@ -21,6 +23,21 @@ import type {
 
 export type DemoProfile = Profile & { password: string }
 
+export interface DemoPortalAccount {
+  login_id: string
+  code: string | null
+  changed: boolean
+  last_login_at: string | null
+  login_count: number
+}
+
+/** بوابة الطالب في الوضع التجريبي: الحسابات (حسب معرّف الطالب) وما نُشر */
+export interface DemoPortal {
+  settings: PortalSettings
+  accounts: Record<string, DemoPortalAccount>
+  publications: PortalPublication[]
+}
+
 export interface DemoDB {
   version: number
   settings: Settings
@@ -33,11 +50,12 @@ export interface DemoDB {
   audit: AuditEntry[]
   curriculum: CurriculumItem[]
   announcements: Announcement[]
+  portal: DemoPortal
   auditSeq: number
   sessionUserId: string | null
 }
 
-export const DEMO_VERSION = 7
+export const DEMO_VERSION = 8
 export const DEMO_PASSWORD = '123456'
 
 function mulberry32(seed: number) {
@@ -397,6 +415,7 @@ export function createDemoDB(): DemoDB {
     audit,
     curriculum,
     announcements,
+    portal: { settings: { enabled: true, portal_url: null, exam_url: null, notice: null }, accounts: {}, publications: [] },
     auditSeq: audit.length,
     sessionUserId: null,
   }

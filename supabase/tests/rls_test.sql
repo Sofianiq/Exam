@@ -417,6 +417,102 @@ select t.ok((select (x ->> 'r2_by_decision')::boolean from jsonb_array_elements(
             'verification flags passes by decision');
 delete from public.academic_years where id = :'ly';
 
+-- ===== بوابة الطالب =====
+:as_t1
+select t.expect_error(format($$select public.portal_overview(%L)$$, :'y'), '%صلاحية%');
+select t.expect_error(format($$select public.portal_cards(%L, %L, 2::smallint, 'morning')$$, :'y', :'rad'), '%صلاحية%');
+:as_anshead
+select t.expect_error(format($$select public.portal_generate_accounts(%L, %L)$$, :'y', :'rad'), '%صلاحية%');
+:as_radhead
+select t.ok((public.portal_generate_accounts(:'y', :'rad', 2::smallint, 'morning') ->> 'created')::int
+            = (select count(*) from public.students where department_id = :'rad' and status = 'active'), 'an account for every active student');
+select t.ok((public.portal_generate_accounts(:'y', :'rad') ->> 'created')::int = 0, 'generating again creates nothing');
+select t.ok((select bool_and(x ->> 'login_id' ~ '^[1-9]\d{6}$' and x ->> 'code' ~ '^\d{8}$')
+             from jsonb_array_elements(public.portal_cards(:'y', :'rad', 2::smallint, 'morning')) x), 'cards: 7-digit login and 8-digit code');
+select x ->> 'login_id' as plogin, x ->> 'code' as pcode
+  from jsonb_array_elements(public.portal_cards(:'y', :'rad', 2::smallint, 'morning')) x where x ->> 'student_id' = :'st1' \gset
+select t.ok((select (c ->> 'accounts')::int >= 3 from jsonb_array_elements(public.portal_overview(:'y') -> 'classes') c), 'head sees own department in the overview');
+select t.expect_error(format($$select public.portal_publish(jsonb_build_object('year_id', %L, 'department_id', %L, 'stage', 2, 'shift', 'morning', 'term', 1, 'kind', 'coursework', 'snapshots', '[]'::jsonb))$$, :'y', :'rad'),
+                      '%مدير النظام أو العميد%');
+select t.expect_error($$select count(*) from public.portal_accounts$$, '%permission denied%');
+:as_admin
+select t.expect_error(format($$select public.portal_publish(jsonb_build_object('year_id', %L, 'department_id', %L, 'stage', 2, 'shift', 'morning', 'term', 0, 'kind', 'coursework', 'snapshots', '[]'::jsonb))$$, :'y', :'rad'),
+                      '%غير صالحة%');
+select t.expect_error(format($$select public.portal_publish(jsonb_build_object('year_id', %L, 'department_id', %L, 'stage', 2, 'shift', 'morning', 'term', 1, 'kind', 'coursework',
+                      'snapshots', jsonb_build_array(jsonb_build_object('student_id', gen_random_uuid(), 'data', '{}'::jsonb))))$$, :'y', :'rad'), '%ليس من هذا الصف%');
+select t.ok((public.portal_publish(jsonb_build_object('year_id', :'y', 'department_id', :'rad', 'stage', 2, 'shift', 'morning', 'term', 1, 'kind', 'coursework',
+             'exam_url', 'https://exam.example/', 'snapshots', jsonb_build_array(jsonb_build_object('student_id', :'st1',
+               'data', jsonb_build_object('v', 1, 'subjects', jsonb_build_array(jsonb_build_object('name', 'مادة', 'cw', 32, 'max', 40))))))) ->> 'students')::int = 1,
+            'coursework published');
+select t.ok((select count(*) = 1 from public.audit_log where action = 'portal.publish') and (select count(*) = 1 from public.audit_log where action = 'portal.accounts'),
+            'portal actions audited');
+insert into public.announcements (title, body, audience, department_id) values ('إعلان للطلبة', 'نص', 'students', null);
+:as_t1
+select t.ok((select count(*) = 0 from public.announcements where audience = 'students'), 'student announcements are not shown to teachers');
+
+-- الطالب: يدخل دون حساب في نظام اللجنة
+reset role;
+set role anon;
+select t.expect_error($$select count(*) from public.portal_snapshots$$, '%permission denied%');
+select t.expect_error($$select count(*) from public.students$$, '%permission denied%');
+select t.expect_error($$select public.portal_payload(gen_random_uuid())$$, '%permission denied%');
+select t.ok((public.portal_login(:'plogin', '00000000') ->> 'code') = 'invalid', 'wrong code rejected');
+select t.ok((public.portal_login('٠٠٠١', 'x') ->> 'ok')::boolean = false, 'unknown login rejected');
+select public.portal_login(:'plogin', :'pcode') as plog \gset
+select t.ok((:'plog'::jsonb ->> 'ok')::boolean, 'student logs in with the printed card');
+select :'plog'::jsonb ->> 'token' as ptoken \gset
+select t.ok((select r ->> 'full_name' = 'احمد كريم جواد' and r ->> 'department' is not null and jsonb_array_length(r -> 'items') = 1
+                    and (r -> 'items' -> 0 -> 'data' -> 'subjects' -> 0 ->> 'cw')::int = 32
+             from jsonb_array_elements(:'plog'::jsonb -> 'data' -> 'records') r), 'payload: own record with the published coursework only');
+select t.ok(:'plog'::jsonb -> 'data' -> 'announcements' -> 0 ->> 'title' = 'إعلان للطلبة', 'payload carries student announcements');
+select t.ok(:'plog'::jsonb -> 'data' ->> 'exam_url' = 'https://exam.example/', 'payload carries the verification base url');
+select t.ok(position('cw_theory' in :'plog') = 0 and position('final_theory' in :'plog') = 0, 'no raw grade components reach the student');
+select t.ok((public.portal_me(:'ptoken') ->> 'ok')::boolean and (public.portal_me('bad-token') ->> 'code') = 'session', 'session token required');
+-- الأرقام العربية والفراغات مقبولة
+select t.ok((public.portal_login(translate(:'plogin', '0123456789', '٠١٢٣٤٥٦٧٨٩'), substr(:'pcode', 1, 4) || ' ' || substr(:'pcode', 5)) ->> 'ok')::boolean,
+            'arabic digits and spaces accepted');
+-- تغيير الرمز
+select t.ok((public.portal_change_code(:'ptoken', 'wrong', 'newcode1') ->> 'code') = 'invalid', 'current code required to change');
+select t.ok((public.portal_change_code(:'ptoken', :'pcode', '123') ->> 'code') = 'weak', 'short codes rejected');
+select t.ok((public.portal_change_code(:'ptoken', :'pcode', 'سري-2026') ->> 'ok')::boolean, 'student changes the code');
+select t.ok((public.portal_login(:'plogin', :'pcode') ->> 'ok')::boolean = false and (public.portal_login(:'plogin', 'سري-2026') ->> 'ok')::boolean,
+            'old code stops working, new code works');
+-- الحد من التخمين
+select public.portal_login(:'plogin', 'bad' || g) from generate_series(1, 5) g;
+select t.ok((public.portal_login(:'plogin', 'سري-2026') ->> 'code') = 'locked', 'locked after repeated wrong codes');
+reset role;
+select t.ok((select initial_code is null and code_changed_at is not null from public.portal_accounts where login_id = :'plogin'), 'printed code erased after the change');
+:as_radhead
+select t.ok((select (x ->> 'code') is null and (x ->> 'changed')::boolean from jsonb_array_elements(public.portal_cards(:'y', :'rad', 2::smallint, 'morning')) x
+             where x ->> 'student_id' = :'st1'), 'cards hide a code the student changed');
+select public.portal_reset_code(:'st1') ->> 'code' as pcode2 \gset
+reset role;
+set role anon;
+select t.ok((public.portal_me(:'ptoken') ->> 'code') = 'session', 'reset signs the student out');
+select t.ok((public.portal_login(:'plogin', :'pcode2') ->> 'ok')::boolean, 'reset clears the lock and gives a new code');
+-- سحب النشر وإيقاف البوابة
+:as_admin
+select public.portal_unpublish(:'y', :'rad', 2::smallint, 'morning', 1::smallint, 'coursework');
+select t.ok(jsonb_array_length(public.portal_overview(:'y') -> 'publications') = 0, 'unpublished');
+select public.portal_save_settings(false, 'https://portal.example/', null, 'رسالة');
+reset role;
+set role anon;
+select t.ok((public.portal_login(:'plogin', :'pcode2') ->> 'code') = 'closed', 'portal can be closed temporarily');
+:as_admin
+select public.portal_save_settings(true, 'https://portal.example/', null, null);
+select t.ok((select exam_url = 'https://exam.example/' and portal_url = 'https://portal.example/' from jsonb_to_record(public.portal_overview(:'y') -> 'settings') as x(exam_url text, portal_url text)),
+            'settings kept');
+-- الطالب نفسه في سنة لاحقة يحتفظ بحسابه (بالاسم في القسم نفسه)
+insert into public.academic_years (label) values ('2027-2028') returning id as y2 \gset
+select public.add_students(:'y2', :'rad', 3::smallint, 'morning', array['احمد كريم جواد', 'طالب جديد تماماً']);
+select t.ok((select r ->> 'created' = '1' and r ->> 'linked' = '1' from public.portal_generate_accounts(:'y2', :'rad') r), 'returning student keeps the same account');
+reset role;
+set role anon;
+select t.ok((select jsonb_array_length(public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records') = 2), 'the student sees both years');
+:as_admin
+delete from public.academic_years where id = :'y2';
+delete from public.announcements where audience = 'students';
+
 -- ===== كلمات المرور =====
 :as_t1
 select t.expect_error($$select public.change_my_password('wrong', 'abcdef1')$$, '%غير صحيحة%');

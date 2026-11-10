@@ -219,7 +219,7 @@ function AnnouncementDialog({ item, onClose, onSaved }: { item: AnnouncementInpu
           </Field>
           <Field label="يظهر لـ">
             <Select value={f.audience} onChange={(e) => set('audience', e.target.value as AnnouncementAudience)}>
-              {(['all', 'teachers', 'heads'] as const).map((v) => (
+              {(['all', 'teachers', 'heads', 'students'] as const).map((v) => (
                 <option key={v} value={v}>
                   {AUDIENCE_LABEL[v]}
                 </option>

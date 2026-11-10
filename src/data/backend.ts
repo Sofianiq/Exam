@@ -1,4 +1,10 @@
 import type {
+  PortalCard,
+  PortalKind,
+  PortalOverview,
+  PortalPublishPayload,
+  PortalSettings,
+  PortalTerm,
   AcademicYear,
   AccountInput,
   Announcement,
@@ -95,6 +101,16 @@ export interface Backend {
   /** سجلات الطالب في كل السنوات (بالرقم الجامعي) */
   findStudentsByNo(studentNo: string): Promise<Student[]>
 
+
+  // بوابة الطالب (تطبيق مستقل): الحسابات والبطاقات والنشر — تُدار من نظام اللجنة
+  portalOverview(yearId: string): Promise<PortalOverview>
+  portalSaveSettings(s: Pick<PortalSettings, 'enabled' | 'portal_url' | 'notice'> & { exam_url?: string | null }): Promise<void>
+  /** ينشئ حسابات الدخول لطلبة صف (أو قسم كامل عند إغفال المرحلة والدراسة) */
+  portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }): Promise<{ created: number; linked: number }>
+  portalCards(k: ClassKey): Promise<PortalCard[]>
+  portalResetCode(studentId: string): Promise<{ login_id: string; code: string }>
+  portalPublish(p: PortalPublishPayload): Promise<{ students: number }>
+  portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void>
 
   /** التحقق العام من نتيجة طالب برمز QR (لا يتطلب تسجيل الدخول) — null إذا كان الرمز غير صحيح */
   verifyResult(code: string): Promise<VerifiedResult | null>

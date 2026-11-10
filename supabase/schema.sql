@@ -231,6 +231,83 @@ create table if not exists public.legacy_imports (
 alter table public.subjects add column if not exists legacy_import_id uuid references public.legacy_imports (id) on delete set null;
 alter table public.students add column if not exists legacy_import_id uuid references public.legacy_imports (id) on delete set null;
 
+-- ترقيات الإصدار السادس: بوابة الطالب (تطبيق مستقل يقرأ ما تنشره اللجنة فقط)
+-- الطالب لا يصل إلى جداول الدرجات إطلاقاً: عند «النشر» تُحفظ لكل طالب نسخة جاهزة (سعيه أو نتيجته بالتقديرات)
+-- وتقرؤها البوابة بدوال محددة، فلا يتأثر نظام اللجنة بعدد الطلبة المتصلين.
+create table if not exists public.portal_settings (
+  id          int primary key default 1 check (id = 1),
+  enabled     boolean not null default true,
+  portal_url  text,
+  exam_url    text,
+  notice      text,
+  updated_at  timestamptz not null default now()
+);
+insert into public.portal_settings (id) values (1) on conflict (id) do nothing;
+
+create table if not exists public.portal_accounts (
+  id               uuid primary key default gen_random_uuid(),
+  login_id         text not null unique,
+  code_hash        text not null,
+  -- الرمز الأولي المطبوع في البطاقة؛ يُمسح نهائياً عندما يغيّر الطالب رمزه
+  initial_code     text,
+  student_no       text unique,
+  disabled         boolean not null default false,
+  created_at       timestamptz not null default now(),
+  code_changed_at  timestamptz,
+  last_login_at    timestamptz,
+  login_count      int not null default 0
+);
+alter table public.students add column if not exists portal_account_id uuid references public.portal_accounts (id) on delete set null;
+create index if not exists students_portal_account_idx on public.students (portal_account_id) where portal_account_id is not null;
+
+create table if not exists public.portal_sessions (
+  token_hash    text primary key,
+  account_id    uuid not null references public.portal_accounts (id) on delete cascade,
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  expires_at    timestamptz not null
+);
+create index if not exists portal_sessions_account_idx on public.portal_sessions (account_id);
+
+-- محاولات الدخول الفاشلة (للحد من تخمين الرموز)
+create table if not exists public.portal_attempts (
+  id        bigint generated always as identity primary key,
+  login_id  text not null,
+  ip        text,
+  at        timestamptz not null default now()
+);
+create index if not exists portal_attempts_login_idx on public.portal_attempts (login_id, at desc);
+create index if not exists portal_attempts_ip_idx on public.portal_attempts (ip, at desc);
+
+-- ما نشرته اللجنة: سعي الفصل (coursework) أو النتيجة (results) لكل صف؛ الفصل 0 = النتيجة السنوية
+create table if not exists public.portal_publications (
+  year_id            uuid not null references public.academic_years (id) on delete cascade,
+  department_id      uuid not null references public.departments (id) on delete cascade,
+  stage              smallint not null check (stage between 1 and 6),
+  shift              text not null check (shift in ('morning','evening')),
+  term               smallint not null check (term in (0,1,2)),
+  kind               text not null check (kind in ('coursework','results')),
+  students           int not null default 0,
+  published_at       timestamptz not null default now(),
+  published_by       uuid,
+  published_by_name  text,
+  primary key (year_id, department_id, stage, shift, term, kind),
+  check (kind = 'results' or term in (1,2))
+);
+
+create table if not exists public.portal_snapshots (
+  student_id    uuid not null references public.students (id) on delete cascade,
+  term          smallint not null check (term in (0,1,2)),
+  kind          text not null check (kind in ('coursework','results')),
+  data          jsonb not null,
+  published_at  timestamptz not null default now(),
+  primary key (student_id, term, kind)
+);
+
+-- إعلانات موجهة للطلبة تظهر في بوابة الطالب
+alter table public.announcements drop constraint if exists announcements_audience_check;
+alter table public.announcements add constraint announcements_audience_check check (audience in ('all','teachers','heads','students'));
+
 create table if not exists public.audit_log (
   id             bigint generated always as identity primary key,
   at             timestamptz not null default now(),
@@ -1157,6 +1234,407 @@ drop function if exists public.import_legacy_class(jsonb);
 drop function if exists public.undo_legacy_import(uuid);
 
 -- ---------------------------------------------------------------------
+-- 6.8 بوابة الطالب
+-- ---------------------------------------------------------------------
+
+-- من يدير البوابة (النشر والإعدادات): مدير النظام والعميد. مقرر القسم يطبع بطاقات قسمه ويعيد تعيين الرموز فقط
+create or replace function public.portal_can_manage() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(public.my_role() in ('admin','dean'), false)
+$$;
+
+create or replace function public.portal_can_cards(p_department_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select public.portal_can_manage()
+      or coalesce(public.my_role() = 'head' and public.my_department() = p_department_id, false)
+$$;
+
+-- أرقام عشوائية آمنة (لرقم الدخول والرمز السري)
+create or replace function public.portal_random_digits(p_len int) returns text
+language sql volatile set search_path = '' as $$
+  select string_agg((get_byte(b, i) % 10)::text, '')
+  from (select extensions.gen_random_bytes(p_len) as b) x, generate_series(0, p_len - 1) i
+$$;
+
+-- توحيد ما يكتبه الطالب: أرقام عربية/فارسية ← لاتينية، وحذف الفراغات
+create or replace function public.portal_clean(p text) returns text
+language sql immutable set search_path = '' as $$
+  select regexp_replace(translate(coalesce(p, ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '\s', '', 'g')
+$$;
+
+-- نظرة عامة لصفحة إدارة البوابة: الصفوف وحساباتها وما نُشر وآخر تعديل على الدرجات بعد النشر
+create or replace function public.portal_overview(p_year_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_all boolean := public.can_view_all();
+  v_dept uuid := public.my_department();
+begin
+  if not v_all and coalesce(public.my_role(), '') <> 'head' then
+    raise exception 'ليست لديك صلاحية لتنفيذ هذه العملية.' using errcode = '42501';
+  end if;
+  return jsonb_build_object(
+    'settings', (select to_jsonb(ps) from public.portal_settings ps where ps.id = 1),
+    'classes', coalesce((
+      select jsonb_agg(to_jsonb(c) order by c.department_id, c.stage, c.shift) from (
+        select st.department_id, st.stage, st.shift,
+               count(*) filter (where st.status = 'active')::int as students,
+               count(*) filter (where st.status = 'active' and st.portal_account_id is not null)::int as accounts,
+               count(*) filter (where st.status = 'active' and a.last_login_at is not null)::int as logged_in
+        from public.students st
+        left join public.portal_accounts a on a.id = st.portal_account_id
+        where st.year_id = p_year_id and (v_all or st.department_id = v_dept)
+        group by st.department_id, st.stage, st.shift) c), '[]'::jsonb),
+    'publications', coalesce((
+      select jsonb_agg(to_jsonb(p)) from public.portal_publications p
+      where p.year_id = p_year_id and (v_all or p.department_id = v_dept)), '[]'::jsonb),
+    'changes', coalesce((
+      select jsonb_agg(to_jsonb(x)) from (
+        select s.department_id, s.stage, s.shift, s.term,
+               count(*)::int as subjects,
+               count(*) filter (where s.status = 'approved')::int as approved,
+               greatest(max(g.at), max(s.reviewed_at), max(s.r2_reviewed_at)) as changed_at
+        from public.subjects s
+        left join lateral (select max(g.updated_at) as at from public.grades g where g.subject_id = s.id) g on true
+        where s.year_id = p_year_id and (v_all or s.department_id = v_dept)
+        group by s.department_id, s.stage, s.shift, s.term) x), '[]'::jsonb)
+  );
+end $$;
+
+create or replace function public.portal_save_settings(p_enabled boolean, p_portal_url text, p_exam_url text, p_notice text)
+returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.portal_can_manage() then
+    raise exception 'إدارة بوابة الطالب من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+  end if;
+  update public.portal_settings set
+    enabled = coalesce(p_enabled, enabled),
+    portal_url = nullif(trim(coalesce(p_portal_url, '')), ''),
+    exam_url = coalesce(nullif(trim(coalesce(p_exam_url, '')), ''), exam_url),
+    notice = nullif(trim(coalesce(p_notice, '')), ''),
+    updated_at = now()
+  where id = 1;
+  perform public.write_audit('portal.settings', 'portal', null, null,
+    case when coalesce(p_enabled, true) then 'تحديث إعدادات بوابة الطالب' else 'إيقاف بوابة الطالب مؤقتاً' end, null);
+end $$;
+
+-- توليد حسابات الدخول لطلبة صف (أو قسم كامل). الطالب الذي له حساب من سنة سابقة (بالرقم الجامعي،
+-- أو بالاسم نفسه في القسم نفسه دون التباس) يحتفظ بحسابه ورمزه، فيرى سجله في كل السنوات.
+create or replace function public.portal_generate_accounts(p_year_id uuid, p_department_id uuid, p_stage smallint default null, p_shift text default null)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  st public.students;
+  v_acc uuid;
+  v_n int;
+  v_login text;
+  v_code text;
+  v_created int := 0;
+  v_linked int := 0;
+begin
+  if not public.portal_can_cards(p_department_id) then
+    raise exception 'ليست لديك صلاحية إنشاء حسابات الطلبة لهذا القسم' using errcode = '42501';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('portal-accounts'));
+  for st in
+    select * from public.students s
+    where s.year_id = p_year_id and s.department_id = p_department_id and s.status = 'active'
+      and s.portal_account_id is null
+      and (p_stage is null or s.stage = p_stage) and (p_shift is null or s.shift = p_shift)
+    order by s.stage, s.shift, s.seq
+  loop
+    v_acc := null;
+    if st.student_no is not null then
+      select a.id into v_acc from public.portal_accounts a where a.student_no = st.student_no;
+    end if;
+    if v_acc is null then
+      -- الاسم نفسه في القسم نفسه في سنة أخرى: يُربط فقط إذا كان المرشح حساباً واحداً غير مستخدم في هذه السنة
+      select count(distinct o.portal_account_id), (array_agg(distinct o.portal_account_id))[1] into v_n, v_acc
+      from public.students o
+      where o.department_id = st.department_id and o.full_name = st.full_name and o.year_id <> st.year_id
+        and o.portal_account_id is not null
+        and (st.student_no is null or o.student_no is null);
+      if v_n <> 1 or exists (select 1 from public.students c where c.year_id = st.year_id and c.portal_account_id = v_acc) then
+        v_acc := null;
+      end if;
+    end if;
+    if v_acc is not null then
+      v_linked := v_linked + 1;
+    else
+      loop
+        v_login := (1 + get_byte(extensions.gen_random_bytes(1), 0) % 9)::text || public.portal_random_digits(6);
+        exit when not exists (select 1 from public.portal_accounts a where a.login_id = v_login);
+      end loop;
+      v_code := public.portal_random_digits(8);
+      insert into public.portal_accounts (login_id, code_hash, initial_code, student_no)
+      values (v_login, extensions.crypt(v_code, extensions.gen_salt('bf', 6)), v_code, st.student_no)
+      returning id into v_acc;
+      v_created := v_created + 1;
+    end if;
+    update public.students set portal_account_id = v_acc where id = st.id;
+  end loop;
+  if v_created + v_linked > 0 then
+    perform public.write_audit('portal.accounts', 'portal', null, p_department_id,
+      'إنشاء حسابات بوابة الطالب: ' || v_created || ' حساب جديد' || case when v_linked > 0 then '، ' || v_linked || ' حساب سابق' else '' end,
+      jsonb_build_object('year_id', p_year_id, 'stage', p_stage, 'shift', p_shift, 'created', v_created, 'linked', v_linked));
+  end if;
+  return jsonb_build_object('created', v_created, 'linked', v_linked);
+end $$;
+
+-- بيانات بطاقات الدخول لصف (الرمز يظهر ما دام الطالب لم يغيّره)
+create or replace function public.portal_cards(p_year_id uuid, p_department_id uuid, p_stage smallint, p_shift text)
+returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not public.portal_can_cards(p_department_id) then
+    raise exception 'ليست لديك صلاحية عرض بطاقات هذا القسم' using errcode = '42501';
+  end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'student_id', s.id, 'seq', s.seq, 'full_name', s.full_name, 'login_id', a.login_id,
+             'code', a.initial_code, 'changed', a.code_changed_at is not null,
+             'last_login_at', a.last_login_at, 'login_count', a.login_count) order by s.seq)
+    from public.students s join public.portal_accounts a on a.id = s.portal_account_id
+    where s.year_id = p_year_id and s.department_id = p_department_id and s.stage = p_stage and s.shift = p_shift
+      and s.status = 'active'), '[]'::jsonb);
+end $$;
+
+-- إعادة تعيين رمز طالب (نسيه مثلاً): رمز جديد يُطبع في بطاقة جديدة، وتُلغى جلساته المفتوحة
+create or replace function public.portal_reset_code(p_student_id uuid) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  st public.students;
+  v_code text;
+  v_login text;
+begin
+  select * into st from public.students where id = p_student_id;
+  if not found or st.portal_account_id is null then
+    raise exception 'لا يوجد حساب بوابة لهذا الطالب' using errcode = '22023';
+  end if;
+  if not public.portal_can_cards(st.department_id) then
+    raise exception 'ليست لديك صلاحية إعادة تعيين رمز هذا الطالب' using errcode = '42501';
+  end if;
+  v_code := public.portal_random_digits(8);
+  update public.portal_accounts set code_hash = extensions.crypt(v_code, extensions.gen_salt('bf', 6)),
+         initial_code = v_code, code_changed_at = null, disabled = false
+   where id = st.portal_account_id returning login_id into v_login;
+  delete from public.portal_sessions where account_id = st.portal_account_id;
+  delete from public.portal_attempts where login_id = v_login;
+  perform public.write_audit('portal.reset_code', 'student', st.id::text, st.department_id,
+    'إعادة تعيين رمز بوابة الطالب — ' || st.full_name, null);
+  return jsonb_build_object('login_id', v_login, 'code', v_code);
+end $$;
+
+-- النشر: يستقبل النسخ الجاهزة التي حسبها نظام اللجنة بمحرك النتائج نفسه (التقديرات فقط، والسعي كمجموع)
+create or replace function public.portal_publish(p jsonb) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_year uuid := (p->>'year_id')::uuid;
+  v_dept uuid := (p->>'department_id')::uuid;
+  v_stage smallint := (p->>'stage')::smallint;
+  v_shift text := p->>'shift';
+  v_term smallint := (p->>'term')::smallint;
+  v_kind text := p->>'kind';
+  v_count int;
+  v_dept_name text;
+begin
+  if not public.portal_can_manage() then
+    raise exception 'النشر في بوابة الطالب من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+  end if;
+  select name into v_dept_name from public.departments where id = v_dept;
+  if v_dept_name is null or v_kind not in ('coursework','results') or v_term not in (0,1,2)
+     or (v_kind = 'coursework' and v_term = 0) or coalesce(v_shift, '') not in ('morning','evening')
+     or not exists (select 1 from public.academic_years where id = v_year) then
+    raise exception 'بيانات النشر غير صالحة' using errcode = '22023';
+  end if;
+  if exists (select 1 from jsonb_array_elements(coalesce(p->'snapshots', '[]')) x
+             where not exists (select 1 from public.students s where s.id = (x.value->>'student_id')::uuid
+                               and s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage and s.shift = v_shift)) then
+    raise exception 'النشر يتضمن طالباً ليس من هذا الصف' using errcode = '22023';
+  end if;
+  delete from public.portal_snapshots sn using public.students s
+   where sn.student_id = s.id and sn.term = v_term and sn.kind = v_kind
+     and s.year_id = v_year and s.department_id = v_dept and s.stage = v_stage and s.shift = v_shift;
+  insert into public.portal_snapshots (student_id, term, kind, data)
+  select (x.value->>'student_id')::uuid, v_term, v_kind, x.value->'data'
+  from jsonb_array_elements(coalesce(p->'snapshots', '[]')) x
+  where jsonb_typeof(x.value->'data') = 'object';
+  get diagnostics v_count = row_count;
+  insert into public.portal_publications (year_id, department_id, stage, shift, term, kind, students, published_by, published_by_name)
+  values (v_year, v_dept, v_stage, v_shift, v_term, v_kind, v_count, auth.uid(), (select full_name from public.profiles where id = auth.uid()))
+  on conflict (year_id, department_id, stage, shift, term, kind) do update set
+    students = excluded.students, published_at = now(), published_by = excluded.published_by, published_by_name = excluded.published_by_name;
+  if nullif(trim(coalesce(p->>'exam_url', '')), '') is not null then
+    update public.portal_settings set exam_url = trim(p->>'exam_url') where id = 1;
+  end if;
+  perform public.write_audit('portal.publish', 'portal', null, v_dept,
+    'نشر في بوابة الطالب: ' || case when v_kind = 'coursework' then 'السعي' else 'النتيجة' end || ' — '
+      || case v_term when 0 then 'السنوية' when 1 then 'الفصل الأول' else 'الفصل الثاني' end || ' — ' || v_dept_name
+      || ' — المرحلة ' || v_stage || ' — ' || case v_shift when 'morning' then 'صباحي' else 'مسائي' end,
+    jsonb_build_object('year_id', v_year, 'stage', v_stage, 'shift', v_shift, 'term', v_term, 'kind', v_kind, 'students', v_count));
+  return jsonb_build_object('students', v_count);
+end $$;
+
+create or replace function public.portal_unpublish(p_year_id uuid, p_department_id uuid, p_stage smallint, p_shift text, p_term smallint, p_kind text)
+returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.portal_can_manage() then
+    raise exception 'سحب النشر من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+  end if;
+  delete from public.portal_snapshots sn using public.students s
+   where sn.student_id = s.id and sn.term = p_term and sn.kind = p_kind
+     and s.year_id = p_year_id and s.department_id = p_department_id and s.stage = p_stage and s.shift = p_shift;
+  delete from public.portal_publications
+   where year_id = p_year_id and department_id = p_department_id and stage = p_stage and shift = p_shift
+     and term = p_term and kind = p_kind;
+  if found then
+    perform public.write_audit('portal.unpublish', 'portal', null, p_department_id,
+      'سحب النشر من بوابة الطالب: ' || case when p_kind = 'coursework' then 'السعي' else 'النتيجة' end || ' — '
+        || case p_term when 0 then 'السنوية' when 1 then 'الفصل الأول' else 'الفصل الثاني' end || ' — المرحلة ' || p_stage,
+      jsonb_build_object('year_id', p_year_id, 'stage', p_stage, 'shift', p_shift, 'term', p_term, 'kind', p_kind));
+  end if;
+end $$;
+
+-- ===== واجهة الطالب (تُستدعى من تطبيق بوابة الطالب دون حساب في نظام اللجنة) =====
+
+-- كل ما يراه الطالب في استجابة واحدة: بياناته وما نُشر له في كل سنواته والإعلانات الموجهة للطلبة
+create or replace function public.portal_payload(p_account_id uuid) returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object(
+    'account', (select jsonb_build_object('login_id', a.login_id, 'code_changed', a.code_changed_at is not null)
+                from public.portal_accounts a where a.id = p_account_id),
+    'college', (select jsonb_build_object('university_name', x.university_name, 'college_name', x.college_name)
+                from public.settings x where x.id = 1),
+    'notice', (select ps.notice from public.portal_settings ps where ps.id = 1),
+    'exam_url', (select ps.exam_url from public.portal_settings ps where ps.id = 1),
+    'records', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'student_id', s.id, 'full_name', s.full_name, 'year', y.label,
+               'department', d.name, 'department_id', d.id, 'stage', s.stage, 'shift', s.shift, 'status', s.status,
+               'verify_code', s.verify_code,
+               'items', coalesce((select jsonb_agg(jsonb_build_object('term', sn.term, 'kind', sn.kind,
+                                                   'published_at', sn.published_at, 'data', sn.data)
+                                                   order by sn.kind, sn.term)
+                                  from public.portal_snapshots sn where sn.student_id = s.id), '[]'::jsonb))
+             order by y.label desc, s.stage desc)
+      from public.students s
+      join public.academic_years y on y.id = s.year_id
+      join public.departments d on d.id = s.department_id
+      where s.portal_account_id = p_account_id), '[]'::jsonb),
+    'announcements', coalesce((
+      select jsonb_agg(to_jsonb(q) order by q.pinned desc, q.created_at desc) from (
+        select a.id, a.title, a.body, a.level, a.pinned, a.created_at, a.created_by_name,
+               (select d.name from public.departments d where d.id = a.department_id) as department
+        from public.announcements a
+        where a.audience = 'students' and (a.expires_at is null or a.expires_at > now())
+          and (a.department_id is null
+               or a.department_id in (select s.department_id from public.students s where s.portal_account_id = p_account_id))
+        order by a.pinned desc, a.created_at desc
+        limit 20) q), '[]'::jsonb),
+    'server_time', now()
+  )
+$$;
+
+-- تسجيل الدخول برقم الدخول والرمز السري. تُعاد الأخطاء كبيانات (لا كاستثناء) كي تُحفظ المحاولة الفاشلة
+create or replace function public.portal_login(p_login text, p_code text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_login text := regexp_replace(public.portal_clean(p_login), '\D', '', 'g');
+  v_code text := public.portal_clean(p_code);
+  v_ip text := nullif(trim(split_part(coalesce(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ''), ',', 1)), '');
+  a public.portal_accounts;
+  v_token text;
+begin
+  if not coalesce((select enabled from public.portal_settings where id = 1), true) then
+    return jsonb_build_object('ok', false, 'code', 'closed', 'error', 'بوابة الطالب مغلقة مؤقتاً. حاول لاحقاً.');
+  end if;
+  if length(v_login) < 4 or length(v_code) < 4 then
+    return jsonb_build_object('ok', false, 'code', 'invalid', 'error', 'أدخل رقم الدخول والرمز السري كما في بطاقتك.');
+  end if;
+  if (select count(*) from public.portal_attempts t where t.login_id = v_login and t.at > now() - interval '15 minutes') >= 5
+     or (select count(*) from public.portal_attempts t where t.login_id = v_login and t.at > now() - interval '24 hours') >= 20
+     or (v_ip is not null and (select count(*) from public.portal_attempts t where t.ip = v_ip and t.at > now() - interval '15 minutes') >= 40) then
+    return jsonb_build_object('ok', false, 'code', 'locked',
+      'error', 'محاولات كثيرة غير صحيحة. انتظر 15 دقيقة ثم حاول مجدداً، أو راجع مقرر القسم لإعادة تعيين الرمز.');
+  end if;
+  select * into a from public.portal_accounts where login_id = v_login;
+  if not found or a.disabled or a.code_hash <> extensions.crypt(v_code, a.code_hash) then
+    insert into public.portal_attempts (login_id, ip) values (v_login, v_ip);
+    return jsonb_build_object('ok', false, 'code', 'invalid', 'error', 'رقم الدخول أو الرمز السري غير صحيح.');
+  end if;
+  v_token := encode(extensions.gen_random_bytes(32), 'hex');
+  delete from public.portal_sessions s where s.account_id = a.id
+     and (s.expires_at < now() or s.token_hash in (
+            select o.token_hash from public.portal_sessions o where o.account_id = a.id order by o.last_seen_at desc offset 9));
+  insert into public.portal_sessions (token_hash, account_id, expires_at)
+  values (encode(extensions.digest(v_token, 'sha256'), 'hex'), a.id, now() + interval '60 days');
+  update public.portal_accounts set last_login_at = now(), login_count = login_count + 1 where id = a.id;
+  delete from public.portal_attempts where login_id = v_login;
+  -- تنظيف دوري خفيف للمحاولات القديمة
+  delete from public.portal_attempts where at < now() - interval '2 days';
+  return jsonb_build_object('ok', true, 'token', v_token, 'data', public.portal_payload(a.id));
+end $$;
+
+create or replace function public.portal_session_account(p_token text) returns uuid
+language sql stable security definer set search_path = '' as $$
+  select s.account_id from public.portal_sessions s join public.portal_accounts a on a.id = s.account_id
+  where s.token_hash = encode(extensions.digest(coalesce(p_token, ''), 'sha256'), 'hex')
+    and s.expires_at > now() and not a.disabled
+$$;
+
+-- بيانات الطالب بجلسته الحالية (تُستدعى عند فتح التطبيق وعند السحب للتحديث)
+create or replace function public.portal_me(p_token text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare v_acc uuid := public.portal_session_account(p_token);
+begin
+  if v_acc is null then
+    return jsonb_build_object('ok', false, 'code', 'session', 'error', 'انتهت الجلسة. سجّل الدخول مجدداً.');
+  end if;
+  if not coalesce((select enabled from public.portal_settings where id = 1), true) then
+    return jsonb_build_object('ok', false, 'code', 'closed', 'error', 'بوابة الطالب مغلقة مؤقتاً. حاول لاحقاً.');
+  end if;
+  -- تمديد الجلسة مرة في الساعة على الأكثر (لتقليل الكتابة)
+  update public.portal_sessions set last_seen_at = now(), expires_at = now() + interval '60 days'
+   where token_hash = encode(extensions.digest(p_token, 'sha256'), 'hex') and last_seen_at < now() - interval '1 hour';
+  return jsonb_build_object('ok', true, 'data', public.portal_payload(v_acc));
+end $$;
+
+-- تغيير الرمز السري (اختياري للطالب): يُمسح الرمز الأولي المطبوع وتُلغى الجلسات الأخرى
+create or replace function public.portal_change_code(p_token text, p_current text, p_new text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_acc uuid := public.portal_session_account(p_token);
+  v_new text := public.portal_clean(p_new);
+  a public.portal_accounts;
+begin
+  if v_acc is null then
+    return jsonb_build_object('ok', false, 'code', 'session', 'error', 'انتهت الجلسة. سجّل الدخول مجدداً.');
+  end if;
+  select * into a from public.portal_accounts where id = v_acc;
+  if (select count(*) from public.portal_attempts t where t.login_id = a.login_id and t.at > now() - interval '15 minutes') >= 5 then
+    return jsonb_build_object('ok', false, 'code', 'locked', 'error', 'محاولات كثيرة غير صحيحة. انتظر 15 دقيقة ثم حاول مجدداً.');
+  end if;
+  if a.code_hash <> extensions.crypt(public.portal_clean(p_current), a.code_hash) then
+    insert into public.portal_attempts (login_id) values (a.login_id);
+    return jsonb_build_object('ok', false, 'code', 'invalid', 'error', 'الرمز الحالي غير صحيح.');
+  end if;
+  if length(v_new) < 6 or length(v_new) > 64 then
+    return jsonb_build_object('ok', false, 'code', 'weak', 'error', 'الرمز الجديد يجب ألا يقل عن 6 خانات.');
+  end if;
+  update public.portal_accounts set code_hash = extensions.crypt(v_new, extensions.gen_salt('bf', 10)),
+         initial_code = null, code_changed_at = now() where id = v_acc;
+  delete from public.portal_sessions where account_id = v_acc
+     and token_hash <> encode(extensions.digest(p_token, 'sha256'), 'hex');
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.portal_logout(p_token text) returns void
+language sql security definer set search_path = '' as $$
+  delete from public.portal_sessions where token_hash = encode(extensions.digest(coalesce(p_token, ''), 'sha256'), 'hex')
+$$;
+
+-- ---------------------------------------------------------------------
 -- 7) إدارة الحسابات
 --    اسم المستخدم يُحوَّل داخلياً إلى بريد وهمي: username@exam.local
 -- ---------------------------------------------------------------------
@@ -1514,6 +1992,13 @@ alter table public.audit_log      enable row level security;
 alter table public.curriculum     enable row level security;
 alter table public.announcements  enable row level security;
 alter table public.legacy_imports enable row level security;
+-- جداول بوابة الطالب بلا سياسات: لا تُقرأ ولا تُكتب إلا عبر دوال البوابة
+alter table public.portal_settings     enable row level security;
+alter table public.portal_accounts     enable row level security;
+alter table public.portal_sessions     enable row level security;
+alter table public.portal_attempts     enable row level security;
+alter table public.portal_publications enable row level security;
+alter table public.portal_snapshots    enable row level security;
 
 drop policy if exists legacy_imports_read on public.legacy_imports;
 create policy legacy_imports_read on public.legacy_imports for select to authenticated using ((select public.is_super()));
@@ -1615,6 +2100,8 @@ create policy audit_read on public.audit_log for select to authenticated using (
 -- ---------------------------------------------------------------------
 
 revoke all on all tables in schema public from anon;
+revoke all on public.portal_settings, public.portal_accounts, public.portal_sessions, public.portal_attempts,
+  public.portal_publications, public.portal_snapshots from anon, authenticated;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.departments, public.academic_years, public.students,
   public.subjects, public.grades, public.curriculum, public.announcements to authenticated;
@@ -1651,8 +2138,21 @@ grant execute on function
   public.change_my_password(text, text),
   public.set_teacher_departments(uuid, uuid[]),
   public.verify_result(text),
-  public.legacy_mode()
+  public.legacy_mode(),
+  public.portal_can_manage(), public.portal_can_cards(uuid),
+  public.portal_overview(uuid), public.portal_save_settings(boolean, text, text, text),
+  public.portal_generate_accounts(uuid, uuid, smallint, text), public.portal_cards(uuid, uuid, smallint, text),
+  public.portal_reset_code(uuid), public.portal_publish(jsonb),
+  public.portal_unpublish(uuid, uuid, smallint, text, smallint, text)
 to authenticated;
+
+-- دوال داخلية للبوابة لا تُستدعى مباشرة
+revoke execute on function public.portal_payload(uuid), public.portal_session_account(text), public.portal_random_digits(int)
+  from public, anon, authenticated;
+-- واجهة الطالب: متاحة دون حساب في نظام اللجنة (التحقق برقم الدخول والرمز ثم برمز الجلسة)
+grant execute on function public.portal_login(text, text), public.portal_me(text),
+  public.portal_change_code(text, text, text), public.portal_logout(text), public.portal_clean(text)
+to anon, authenticated;
 
 -- صفحة التحقق من النتيجة عامة: يستطيع أي شخص يحمل رمز النتيجة التحقق منها دون حساب
 grant usage on schema public to anon;
