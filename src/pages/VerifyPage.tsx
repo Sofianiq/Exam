@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, BadgeCheck, LogIn, ShieldX, EyeOff } from 'lucide-react'
+import { AlertTriangle, BadgeCheck, ShieldX, EyeOff } from 'lucide-react'
 import { buildVerifiedReport } from '../app/results'
 import { formatCode } from '../components/ResultSlip'
 import { Spinner, cx } from '../components/ui'
@@ -160,14 +160,8 @@ export function VerifyPage({ code }: { code: string }) {
             </p>
           </div>
         )}
-
-        <div className="mt-8 text-center">
-          <a href="#/" className="inline-flex items-center gap-2 rounded-lg border border-[#d3d9e2] bg-white px-4 py-2 text-sm font-medium text-[#14284b] hover:bg-[#eef3fb]">
-            <LogIn className="size-4" />
-            الدخول إلى نظام اللجنة الامتحانية
-          </a>
-        </div>
       </main>
+      {/* صفحة عامة يفتحها الطالب أو ولي أمره: لا رابط فيها إلى نظام اللجنة */}
       <footer className="pb-8 text-center text-xs leading-relaxed text-[#8a93a3]">
         نظام إدارة اللجنة الامتحانية — إعداد وتطوير: م.م سفيان محمد
       </footer>

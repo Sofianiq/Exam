@@ -370,6 +370,7 @@ async function main() {
   await vpage.waitForSelector('text=حالة الطالب: مكمل')
   const partial = await vpage.locator('text=نتيجة موثقة جزئياً').count()
   assert((await vpage.locator('img[alt^="ختم"]').count()) === (partial ? 0 : 1), 'committee seal only on fully approved results')
+  assert((await vpage.locator('a').count()) === 0 && !(await vpage.locator('body').innerText()).includes('الدخول إلى نظام'), 'public verify page has no link into the committee system')
   await vpage.screenshot({ path: path.join(OUT, '11c-verify.png'), fullPage: true })
   await vpage.goto(`${BASE}#/verify/0000-0000-0000-0000`)
   await vpage.waitForSelector('text=رمز التحقق غير صحيح')
