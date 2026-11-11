@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users, Eye, EyeOff, Search } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users, Eye, EyeOff, Search, History, Link2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PORTAL_ITEMS, buildPortalSnapshots, isStalePublication, portalLoginUrl, publishBlocker } from '../app/portal'
@@ -13,7 +13,7 @@ import { fmtDateTime } from '../lib/format'
 import { SHIFT_LABEL, stageLabel } from '../lib/labels'
 import { canViewAll } from '../lib/perm'
 import { WithholdDialog } from '../components/WithholdDialog'
-import type { ClassKey, PortalCard, PortalChange, PortalClassInfo, PortalKind, PortalOverview, PortalPublication, PortalTerm, PortalWithheld } from '../lib/types'
+import type { ClassKey, PortalCard, PortalChange, PortalClassInfo, PortalHistoryReport, PortalKind, PortalOverview, PortalPublication, PortalTerm, PortalWithheld } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function PortalPage() {
@@ -402,6 +402,8 @@ function Portal() {
         )}
       </Card>
 
+      <HistoryCheck yearId={s.yearId} dept={isHead ? (s.profile.department_id ?? '') : dept} onChanged={refresh} />
+
       {/* النتائج المحجوبة مؤقتاً */}
       <Card>
         <CardHeader
@@ -481,6 +483,154 @@ function Portal() {
       )}
       {cardsOf && <CardsModal cls={cardsOf} classKey={keyOf(cardsOf)} title={title(cardsOf)} portalUrl={ov.settings.portal_url} onClose={() => setCardsOf(null)} onChanged={refresh} />}
     </div>
+  )
+}
+
+/** فحص سجلات الطلبة في السنوات السابقة: من ينقصه سجل (مع مرشحين للربط) وما لم يُنشر من نتائج تلك السنوات */
+function HistoryCheck({ yearId, dept, onChanged }: { yearId: string; dept: string; onChanged: () => unknown }) {
+  const s = useSession()
+  const toast = useToast()
+  const confirm = useConfirm()
+  const [open, setOpen] = useState(false)
+  const [linking, setLinking] = useState<string | null>(null)
+  const q = useQuery({ queryKey: ['portal', 'history', yearId, dept], queryFn: () => backend.portalHistoryReport(yearId, dept || null), enabled: open && !!yearId })
+  const rep: PortalHistoryReport | undefined = q.data
+  const cls = (x: { department_id: string; stage: number; shift: ClassKey['shift'] }) => `${s.deptById(x.department_id)?.name ?? ''} — ${stageLabel(x.stage)} — ${SHIFT_LABEL[x.shift]}`
+
+  const link = async (m: PortalHistoryReport['missing'][number], c: PortalHistoryReport['missing'][number]['candidates'][number]) => {
+    const ok = await confirm({
+      title: 'ربط سجل سنة سابقة',
+      message: (
+        <div className="space-y-2">
+          <p>تأكد أن السجلين للطالب نفسه؛ بعد الربط يرى الطالب نتيجة تلك السنة في البوابة.</p>
+          <ul className="space-y-1 rounded-lg bg-surface-2 px-3 py-2">
+            <li>
+              <b>{m.full_name}</b> — {stageLabel(m.stage)} ({s.year?.label})
+            </li>
+            <li>
+              <b>{c.full_name}</b> — {stageLabel(c.stage)} ({c.year})
+            </li>
+          </ul>
+          {c.other_account && <p className="text-warning">للسجل الأسبق حساب دخول آخر؛ سيُدمج الحسابان ويبقى حساب الطالب الحالي.</p>}
+        </div>
+      ),
+      confirmText: 'ربط السجلين',
+    })
+    if (!ok) return
+    setLinking(`${m.student_id}|${c.student_id}`)
+    try {
+      await backend.portalLinkPair(m.student_id, c.student_id)
+      toast.success('رُبط السجل بحساب الطالب')
+      await q.refetch()
+      await onChanged()
+    } catch (e) {
+      toast.error(e)
+    } finally {
+      setLinking(null)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon={<History className="size-5" />}
+        title="فحص سجلات السنوات السابقة"
+        subtitle="يبيّن من لا تظهر له مراحله السابقة في البوابة ولماذا: سجل غير مربوط بحسابه، أو نتيجة سنة سابقة لم تُنشر"
+        actions={
+          <Button icon={<History className="size-4" />} loading={open && q.isFetching} onClick={() => (open ? void q.refetch() : setOpen(true))}>
+            {open ? 'إعادة الفحص' : 'فحص'}
+          </Button>
+        }
+      />
+      {open && q.isError && (
+        <div className="px-5 pb-5">
+          <Callout tone="danger">{errorText(q.error)}</Callout>
+        </div>
+      )}
+      {open && rep && (
+        <div className="space-y-4 px-5 pb-5 text-sm">
+          <p className="text-muted">
+            طلبة المرحلة الثانية فما فوق في {s.year?.label}: <b className="text-ink">{rep.students}</b> — تنقصهم سجلات سنوات سابقة:{' '}
+            <b className={rep.missing_total ? 'text-warning' : 'text-success'}>{rep.missing_total}</b> — صفوف سابقة غير منشورة النتائج:{' '}
+            <b className={rep.unpublished.length ? 'text-warning' : 'text-success'}>{rep.unpublished.length}</b>
+          </p>
+
+          {rep.unpublished.length > 0 && (
+            <Callout tone="warning" title="نتائج سنوات سابقة لم تُنشر لطلبة حاليين">
+              <ul className="mt-1 list-disc space-y-0.5 ps-5">
+                {rep.unpublished.map((u) => (
+                  <li key={`${u.year_id}|${classId(u)}`}>
+                    {u.year} — {cls(u)} — {u.students} {u.students === 1 ? 'طالب' : 'طلاب'}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2">اختر السنة الدراسية من أعلى الصفحة ثم اضغط «نشر النتائج الجاهزة». الصف الذي لا يظهر له زر نشر فيه قوائم غير معتمدة (السبب مكتوب في خانته).</p>
+            </Callout>
+          )}
+
+          {rep.missing.length > 0 ? (
+            <div className="overflow-x-auto rounded-xl border border-line">
+              <table className="table-base">
+                <thead>
+                  <tr>
+                    <th>الطالب</th>
+                    <th>الصف الحالي</th>
+                    <th className="text-center">سنوات سابقة مربوطة</th>
+                    <th>سجلات مشابهة في سنوات سابقة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rep.missing.map((m) => (
+                    <tr key={m.student_id} className="align-top">
+                      <td className="font-medium">
+                        <Link to={`/student/${m.student_id}`} className="hover:text-primary-text hover:underline">
+                          {m.full_name}
+                        </Link>
+                      </td>
+                      <td className="text-sm text-muted">{cls(m)}</td>
+                      <td className="text-center tabular-nums">
+                        {m.have} من {m.stage - 1}
+                      </td>
+                      <td>
+                        {m.candidates.length === 0 ? (
+                          <span className="text-xs text-faint">لا يوجد سجل مشابه في القسم (قد يكون الطالب منقولاً أو لم تُرحَّل سنته)</span>
+                        ) : (
+                          <ul className="space-y-1.5">
+                            {m.candidates.map((c) => (
+                              <li key={c.student_id} className="flex flex-wrap items-center gap-2">
+                                <Button size="sm" icon={<Link2 className="size-3.5" />} loading={linking === `${m.student_id}|${c.student_id}`} disabled={!!linking} onClick={() => link(m, c)}>
+                                  ربط
+                                </Button>
+                                <Link to={`/student/${c.student_id}`} className="font-medium hover:text-primary-text hover:underline">
+                                  {c.full_name}
+                                </Link>
+                                <span className="text-xs text-muted">
+                                  {c.year} — {stageLabel(c.stage)} — {SHIFT_LABEL[c.shift]}
+                                </span>
+                                {c.other_account && <Badge tone="warning">له حساب آخر</Badge>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {rep.missing_total > rep.missing.length && <p className="px-4 py-2 text-xs text-muted">تُعرض أول {rep.missing.length} حالة من {rep.missing_total}؛ اختر قسماً لتضييق القائمة.</p>}
+            </div>
+          ) : (
+            <Callout tone="success">كل طلبة المرحلة الثانية فما فوق مربوطون بسجلات سنواتهم السابقة.</Callout>
+          )}
+          {rep.missing.length > 0 && (
+            <p className="text-xs text-muted">
+              الربط التلقائي يطابق الرقم الجامعي أو الاسم الكامل فقط؛ الأسماء المكتوبة بشكل مختلف (ثلاثي ورباعي مثلاً) تظهر هنا لتربطها بعد التأكد. عمود «سنوات سابقة مربوطة» يبيّن عدد السنوات
+              الظاهرة للطالب من المتوقع حسب مرحلته.
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }
 

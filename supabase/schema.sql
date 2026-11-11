@@ -1377,22 +1377,77 @@ language sql immutable set search_path = '' as $$
            '\s+', ' ', 'g'))
 $$;
 
+-- كلمات الاسم للمطابقة: «عبد الله» و«عبدالله»، و«ابو الفضل» و«ابوالفضل» تُعدّ واحدة
+create or replace function public.name_words(p text) returns text[]
+language sql immutable set search_path = '' as $$
+  select string_to_array(regexp_replace(public.name_key(p), '(^| )(عبد|ابو) ', '\1\2', 'g'), ' ')
+$$;
+
 -- ربط سجلات الطالب في كل السنوات بحسابه في بوابة الطالب ليرى كل مراحله ونتائجه بحساب واحد،
 -- أياً كانت السنة التي أُنشئت فيها الحسابات. يُربط السجل غير المربوط بحساب موجود في حالتين فقط:
 --   1) الرقم الجامعي نفسه (في أي قسم).
 --   2) الاسم نفسه (بعد التطبيع) في القسم نفسه في سنة أخرى، بشروط تمنع الالتباس: حساب مرشح واحد، ولا يوجد
 --      في سنة السجل طالب آخر غير مربوط بالاسم نفسه، ولا يتعارض الرقمان الجامعيان، وتسلسل المراحل معقول
 --      (لا يتقدم الطالب أكثر من مرحلة في السنة ولا يتراجع).
--- ولا يُربط للحساب أكثر من سجل في السنة الواحدة. تُعيد عدد السجلات التي رُبطت.
+-- ولا يُربط للحساب أكثر من سجل في السنة الواحدة.
+-- وإذا كان للشخص نفسه حسابان (أُنشئ الثاني في سنة سابقة قبل أن يُعرف أنه الطالب نفسه) يُدمجان بالشروط نفسها:
+-- يبقى الحساب المستخدَم، وإلا حساب السنة الأحدث (الذي طُبعت بطاقته)، وتنتقل إليه سجلات الحساب الآخر ثم يُحذف.
+-- تُعيد عدد السجلات التي رُبطت أو نُقلت.
 create or replace function public.portal_link_records(p_department_id uuid default null) returns int
 language plpgsql security definer set search_path = '' as $$
 declare
   v_total int := 0;
   v_a int;
   v_b int;
+  v_m int;
+  v_n int;
+  v_keep uuid;
+  v_drop uuid;
 begin
   perform pg_advisory_xact_lock(hashtext('portal-accounts'));
-  for i in 1..4 loop
+  for i in 1..6 loop
+    -- (0) دمج حسابين للشخص نفسه
+    v_m := 0;
+    for v_keep, v_drop in
+      with r as materialized (
+        select s.portal_account_id as acc, s.year_id, s.department_id, s.stage, s.student_no,
+               array_to_string(public.name_words(s.full_name), ' ') as k, substring(y.label from '^\d{4}')::int as yr
+        from public.students s join public.academic_years y on y.id = s.year_id
+        where s.portal_account_id is not null and (p_department_id is null or s.department_id = p_department_id)),
+      m as (
+        select a.acc as a, b.acc as b
+        from r a join r b on a.acc <> b.acc
+             and ((a.student_no is not null and a.student_no = b.student_no)
+                  or (a.department_id = b.department_id and a.k = b.k and a.k <> ''))
+        group by a.acc, b.acc
+        having bool_and(a.year_id <> b.year_id
+                        and (a.student_no is null or b.student_no is null or a.student_no = b.student_no)
+                        and (a.yr is null or b.yr is null
+                             or (a.stage - b.stage) between least(0, a.yr - b.yr) and greatest(0, a.yr - b.yr)))),
+      ok as (
+        select m.a, m.b from m
+        where m.a < m.b
+          and (select count(*) from m m2 where m2.a = m.a) = 1
+          and (select count(*) from m m3 where m3.a = m.b) = 1
+          and not exists (select 1 from public.students x join public.students z on z.year_id = x.year_id
+                          where x.portal_account_id = m.a and z.portal_account_id = m.b)),
+      q as (
+        select o.a, o.b,
+               (aa.login_count > 0 or aa.code_changed_at is not null) as ua,
+               (ab.login_count > 0 or ab.code_changed_at is not null) as ub,
+               (select max(y.label) from public.students s join public.academic_years y on y.id = s.year_id where s.portal_account_id = o.a) as ya,
+               (select max(y.label) from public.students s join public.academic_years y on y.id = s.year_id where s.portal_account_id = o.b) as yb
+        from ok o join public.portal_accounts aa on aa.id = o.a join public.portal_accounts ab on ab.id = o.b)
+      select case when q.ua and not q.ub then q.a when q.ub and not q.ua then q.b when q.ya >= q.yb then q.a else q.b end,
+             case when q.ua and not q.ub then q.b when q.ub and not q.ua then q.a when q.ya >= q.yb then q.b else q.a end
+      from q
+    loop
+      update public.students set portal_account_id = v_keep where portal_account_id = v_drop;
+      get diagnostics v_n = row_count;
+      v_m := v_m + v_n;
+      delete from public.portal_accounts where id = v_drop;
+    end loop;
+
     -- (1) بالرقم الجامعي
     with known as (
       select x.sn, (array_agg(x.acc))[1] as acc
@@ -1413,12 +1468,12 @@ begin
 
     -- (2) بالاسم في القسم نفسه
     with u as materialized (
-      select s.id, s.year_id, s.department_id, s.stage, s.student_no, public.name_key(s.full_name) as k,
+      select s.id, s.year_id, s.department_id, s.stage, s.student_no, array_to_string(public.name_words(s.full_name), ' ') as k,
              substring(y.label from '^\d{4}')::int as yr
       from public.students s join public.academic_years y on y.id = s.year_id
       where s.portal_account_id is null and (p_department_id is null or s.department_id = p_department_id)),
     l as materialized (
-      select s.portal_account_id as acc, s.year_id, s.department_id, s.stage, s.student_no, public.name_key(s.full_name) as k,
+      select s.portal_account_id as acc, s.year_id, s.department_id, s.stage, s.student_no, array_to_string(public.name_words(s.full_name), ' ') as k,
              substring(y.label from '^\d{4}')::int as yr
       from public.students s join public.academic_years y on y.id = s.year_id
       where s.portal_account_id is not null and (p_department_id is null or s.department_id = p_department_id)),
@@ -1440,8 +1495,8 @@ begin
     update public.students s set portal_account_id = p.acc from pick p where s.id = p.id;
     get diagnostics v_b = row_count;
 
-    v_total := v_total + v_a + v_b;
-    exit when v_a + v_b = 0;
+    v_total := v_total + v_m + v_a + v_b;
+    exit when v_m + v_a + v_b = 0;
   end loop;
   -- يُثبَّت الرقم الجامعي على الحساب متى عُرف من أحد سجلاته (يقوّي الربط في السنوات القادمة)
   update public.portal_accounts a set student_no = x.sn
@@ -1471,6 +1526,145 @@ begin
       'ربط سجلات سنوات أخرى بحسابات بوابة الطالب: ' || v_n || ' سجل', jsonb_build_object('history', v_n));
   end if;
   return jsonb_build_object('linked', v_n);
+end $$;
+
+-- فحص اكتمال سجلات الطلبة في بوابة الطالب للسنة المختارة:
+--   missing: طلبة (مرحلة ثانية فما فوق) سجلاتهم الأسبق المربوطة بحسابهم أقل من المتوقع، مع سجلات مرشحة للربط اليدوي
+--            (القسم نفسه، سنة أسبق، الاسمان الأولان متطابقان) — الربط التلقائي لا يطابق إلا الاسم الكامل أو الرقم الجامعي.
+--   unpublished: صفوف في سنوات أسبق فيها سجلات لطلبة حاليين ولم تُنشر نتائجها بعد.
+create or replace function public.portal_history_report(p_year_id uuid, p_department_id uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_all boolean := public.can_view_all();
+  v_dept uuid := p_department_id;
+  v_label text;
+begin
+  if not v_all then
+    if coalesce(public.my_role(), '') <> 'head' then
+      raise exception 'ليست لديك صلاحية لتنفيذ هذه العملية.' using errcode = '42501';
+    end if;
+    v_dept := public.my_department();
+  end if;
+  select y.label into v_label from public.academic_years y where y.id = p_year_id;
+  return (
+    with cur as materialized (
+      select s.id, s.full_name, s.department_id, s.stage, s.shift, s.portal_account_id as acc, s.student_no,
+             public.name_words(s.full_name) as w
+      from public.students s
+      where s.year_id = p_year_id and s.status = 'active' and s.portal_account_id is not null and s.stage > 1
+        and (v_dept is null or s.department_id = v_dept)),
+    prev as materialized (
+      select c.id as cur_id, e.id, e.year_id, y.label, e.department_id, e.stage, e.shift,
+             exists (select 1 from public.portal_snapshots sn where sn.student_id = e.id and sn.kind = 'results') as published
+      from cur c
+      join public.students e on e.portal_account_id = c.acc and e.id <> c.id
+      join public.academic_years y on y.id = e.year_id
+      where y.label < v_label),
+    lack as materialized (
+      select c.*, (select count(*) from prev p where p.cur_id = c.id)::int as have
+      from cur c
+      where (select count(*) from prev p where p.cur_id = c.id) < c.stage - 1),
+    pool as materialized (
+      select e.id, e.full_name, e.department_id, e.stage, e.shift, e.year_id, e.portal_account_id as acc, e.student_no,
+             y.label, public.name_words(e.full_name) as w
+      from public.students e join public.academic_years y on y.id = e.year_id
+      where y.label < v_label and (v_dept is null or e.department_id = v_dept)
+        and exists (select 1 from lack)),
+    cand as (
+      select l.id as cur_id, e.id as student_id, e.full_name, e.label as year, e.stage, e.shift,
+             e.acc is not null as other_account, e.w = l.w as exact,
+             row_number() over (partition by l.id order by (e.w = l.w) desc, e.label desc, e.full_name) as rn
+      from lack l
+      join pool e on e.department_id = l.department_id
+                 and array_to_string(e.w[1:2], ' ') = array_to_string(l.w[1:2], ' ')
+      where e.acc is distinct from l.acc and e.stage <= l.stage
+        and (e.student_no is null or l.student_no is null or e.student_no = l.student_no)
+        and not exists (select 1 from prev p where p.cur_id = l.id and p.year_id = e.year_id))
+    select jsonb_build_object(
+      'students', (select count(*) from cur),
+      'missing_total', (select count(*) from lack),
+      'missing', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'student_id', l.id, 'full_name', l.full_name, 'department_id', l.department_id, 'stage', l.stage, 'shift', l.shift,
+                 'have', l.have,
+                 'candidates', coalesce((select jsonb_agg(jsonb_build_object('student_id', c.student_id, 'full_name', c.full_name,
+                                                   'year', c.year, 'stage', c.stage, 'shift', c.shift,
+                                                   'other_account', c.other_account, 'exact', c.exact) order by c.rn)
+                                         from cand c where c.cur_id = l.id and c.rn <= 4), '[]'::jsonb))
+               order by l.department_id, l.stage, l.shift, l.full_name)
+        from (select * from lack order by department_id, stage, shift, full_name limit 500) l), '[]'::jsonb),
+      'unpublished', coalesce((
+        select jsonb_agg(to_jsonb(u) order by u.year desc, u.department_id, u.stage, u.shift) from (
+          select p.label as year, p.year_id, p.department_id, p.stage, p.shift, count(*)::int as students
+          from prev p where not p.published
+          group by p.label, p.year_id, p.department_id, p.stage, p.shift) u), '[]'::jsonb))
+  );
+end $$;
+
+-- ربط يدوي بين سجلين للطالب نفسه في سنتين مختلفتين (بعد مراجعة بشرية للاسمين): يلتحق السجل غير المربوط بحساب
+-- السجل الآخر، وإن كان لكل منهما حساب دُمج الحسابان (يبقى المستخدَم، وإلا حساب p_student_id).
+create or replace function public.portal_link_pair(p_student_id uuid, p_other_id uuid) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  a public.students;
+  b public.students;
+  v_keep uuid;
+  v_drop uuid;
+  v_moved int := 0;
+  ua boolean;
+  ub boolean;
+begin
+  select * into a from public.students where id = p_student_id;
+  if not found then raise exception 'الطالب غير موجود'; end if;
+  select * into b from public.students where id = p_other_id;
+  if not found then raise exception 'السجل الآخر غير موجود'; end if;
+  if not public.portal_can_cards(a.department_id) or not public.portal_can_cards(b.department_id) then
+    raise exception 'ليست لديك صلاحية إدارة حسابات طلبة هذا القسم' using errcode = '42501';
+  end if;
+  if a.year_id = b.year_id then
+    raise exception 'السجلان في السنة الدراسية نفسها؛ الربط يكون بين سنتين مختلفتين' using errcode = '22023';
+  end if;
+  if a.portal_account_id is null and b.portal_account_id is null then
+    raise exception 'لا حساب لأي من السجلين. أنشئ حساب الطالب أولاً من «إنشاء الحسابات الناقصة»' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('portal-accounts'));
+  if a.portal_account_id is not distinct from b.portal_account_id then
+    return jsonb_build_object('moved', 0);
+  end if;
+  if a.portal_account_id is null or b.portal_account_id is null then
+    v_keep := coalesce(a.portal_account_id, b.portal_account_id);
+    if exists (select 1 from public.students z where z.portal_account_id = v_keep
+               and z.year_id = case when a.portal_account_id is null then a.year_id else b.year_id end) then
+      raise exception 'لهذا الحساب سجل آخر في تلك السنة الدراسية' using errcode = '22023';
+    end if;
+    update public.students set portal_account_id = v_keep
+     where id = case when a.portal_account_id is null then a.id else b.id end;
+    v_moved := 1;
+  else
+    if exists (select 1 from public.students x join public.students z on z.year_id = x.year_id
+               where x.portal_account_id = a.portal_account_id and z.portal_account_id = b.portal_account_id) then
+      raise exception 'للحسابين سجلان في سنة دراسية واحدة، فلا يمكن أن يكونا للطالب نفسه' using errcode = '22023';
+    end if;
+    select (x.login_count > 0 or x.code_changed_at is not null) into ua from public.portal_accounts x where x.id = a.portal_account_id;
+    select (x.login_count > 0 or x.code_changed_at is not null) into ub from public.portal_accounts x where x.id = b.portal_account_id;
+    if ub and not ua then
+      v_keep := b.portal_account_id; v_drop := a.portal_account_id;
+    else
+      v_keep := a.portal_account_id; v_drop := b.portal_account_id;
+    end if;
+    update public.students set portal_account_id = v_keep where portal_account_id = v_drop;
+    get diagnostics v_moved = row_count;
+    delete from public.portal_accounts where id = v_drop;
+  end if;
+  update public.portal_accounts acc set student_no = x.sn
+  from (select min(s.student_no) as sn from public.students s
+        where s.portal_account_id = v_keep and s.student_no is not null having count(distinct s.student_no) = 1) x
+  where acc.id = v_keep and acc.student_no is null
+    and not exists (select 1 from public.portal_accounts o where o.student_no = x.sn);
+  perform public.write_audit('portal.accounts', 'portal', null, a.department_id,
+    'ربط سجل سنة أخرى بحساب الطالب في البوابة: ' || a.full_name,
+    jsonb_build_object('student_id', a.id, 'other_id', b.id, 'other_name', b.full_name, 'moved', v_moved));
+  return jsonb_build_object('moved', v_moved);
 end $$;
 
 -- توليد حسابات الدخول لطلبة صف (أو قسم كامل). الطالب الذي له حساب من سنة سابقة (بالرقم الجامعي،
@@ -2322,7 +2516,8 @@ grant execute on function
   public.portal_reset_code(uuid), public.portal_publish(jsonb),
   public.portal_unpublish(uuid, uuid, smallint, text, smallint, text),
   public.set_result_withheld(uuid, boolean, text),
-  public.portal_link_history(uuid)
+  public.portal_link_history(uuid),
+  public.portal_history_report(uuid, uuid), public.portal_link_pair(uuid, uuid)
 to authenticated;
 
 -- دوال داخلية للبوابة لا تُستدعى مباشرة

@@ -405,6 +405,26 @@ export interface PortalWithheld {
   by_name: string | null
 }
 
+/** فحص اكتمال سجلات الطلبة في بوابة الطالب (السنوات السابقة) */
+export interface PortalHistoryReport {
+  /** طلبة السنة المختارة في المرحلة الثانية فما فوق ولهم حساب */
+  students: number
+  missing_total: number
+  /** من ينقصه سجل سنة سابقة، مع سجلات مرشحة للربط اليدوي */
+  missing: {
+    student_id: string
+    full_name: string
+    department_id: string
+    stage: number
+    shift: Shift
+    /** عدد سجلاته المربوطة في سنوات أسبق */
+    have: number
+    candidates: { student_id: string; full_name: string; year: string; stage: number; shift: Shift; other_account: boolean; exact: boolean }[]
+  }[]
+  /** صفوف في سنوات أسبق فيها سجلات لطلبة حاليين ولم تُنشر نتائجها */
+  unpublished: { year: string; year_id: string; department_id: string; stage: number; shift: Shift; students: number }[]
+}
+
 export interface PortalOverview {
   settings: PortalSettings
   classes: PortalClassInfo[]

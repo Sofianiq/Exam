@@ -18,6 +18,7 @@ import {
 } from '../lib/perm'
 import type {
   PortalCard,
+  PortalHistoryReport,
   PortalKind,
   PortalOverview,
   PortalPublishPayload,
@@ -500,6 +501,21 @@ export class DemoBackend implements Backend {
     const me = this.me()
     if (departmentId ? !this.portalCardsAllowed(me, departmentId) : !this.portalManage(me)) fail('ليست لديك صلاحية إدارة حسابات الطلبة')
     return { linked: 0 }
+  }
+
+  /** في الوضع التجريبي لكل سجل حساب مستقل، فلا سجلات سنوات سابقة تُفحص */
+  async portalHistoryReport(yearId: string, departmentId?: string | null): Promise<PortalHistoryReport> {
+    await wait(20)
+    const me = this.me()
+    if (!canViewAll(me) && me.role !== 'head') fail('ليست لديك صلاحية لتنفيذ هذه العملية.')
+    const dept = canViewAll(me) ? departmentId : me.department_id
+    const students = this.db.students.filter((st) => st.year_id === yearId && st.status === 'active' && st.stage > 1 && this.db.portal.accounts[st.id] && (!dept || st.department_id === dept)).length
+    return { students, missing_total: 0, missing: [], unpublished: [] }
+  }
+
+  async portalLinkPair(): Promise<{ moved: number }> {
+    await wait(20)
+    return fail('ربط السجلات غير متاح في الوضع التجريبي')
   }
 
   async portalCards(k: ClassKey): Promise<PortalCard[]> {
