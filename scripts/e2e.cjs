@@ -468,6 +468,10 @@ async function main() {
   assert(cardText.includes('بوابة الطالب') && cardText.includes('الرمز السري') && cardText.includes('امسح للدخول مباشرة'), 'printable access cards with QR')
   await page.emulateMedia({ media: 'screen' })
   await page.click('[role="dialog"] button:has-text("إغلاق")')
+  // فحص سجلات السنوات السابقة (في الوضع التجريبي لا نواقص)
+  await page.click('button:has-text("فحص")')
+  await page.waitForSelector('text=مربوطون بسجلات سنواتهم السابقة')
+  assert((await page.locator('main').innerText()).includes('تنقصهم سجلات سنوات سابقة'), 'history check summary shown')
   // النتائج المحجوبة تُدار من بوابة الطلبة: رفع الحجب يعيدها فوراً
   const heldRow = page.locator('main tbody tr', { hasText: heldName }).filter({ hasText: 'يرجى مراجعة اللجنة الامتحانية.' })
   await heldRow.waitFor()

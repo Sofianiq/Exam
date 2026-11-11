@@ -581,6 +581,49 @@ select t.ok((select r ->> 'created' = '1' and r ->> 'linked' = '1' and r ->> 'hi
 reset role;
 set role anon;
 select t.ok((select jsonb_array_length(public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records') = 4), 'the student sees all four years');
+-- حسابان للطالب نفسه (أُنشئ الثاني في السنة السابقة باسم مكتوب بشكل مختلف) يُدمجان ويبقى حساب السنة الأحدث
+:as_admin
+select public.add_students(:'y', :'rad', 2::smallint, 'morning', array['عبد الله سالم حمد', 'ساره محمود علي']);
+select public.add_students(:'y0', :'rad', 1::smallint, 'morning', array['عبدالله سالم حمد', 'سارة محمود علي الدليمي']);
+select public.portal_generate_accounts(:'y', :'rad', 2::smallint, 'morning');
+reset role;
+insert into public.portal_accounts (login_id, code_hash) values ('8000001', 'x') returning id as dup_acc \gset
+update public.students set portal_account_id = :'dup_acc' where year_id = :'y0' and full_name = 'عبدالله سالم حمد';
+select id as abd from public.students where year_id = :'y' and full_name = 'عبد الله سالم حمد' \gset
+select id as sara from public.students where year_id = :'y' and full_name = 'ساره محمود علي' \gset
+select id as sara0 from public.students where year_id = :'y0' and full_name = 'سارة محمود علي الدليمي' \gset
+:as_admin
+select t.ok((public.portal_link_history(null) ->> 'linked')::int = 1, 'duplicate account of the same student is merged');
+reset role;
+select t.ok((select count(*) = 2 and count(distinct portal_account_id) = 1 from public.students where full_name in ('عبد الله سالم حمد', 'عبدالله سالم حمد'))
+            and (select count(*) = 0 from public.portal_accounts where login_id = '8000001'),
+            'both years are on the newest-year account and the duplicate is gone');
+select t.ok((select portal_account_id is null from public.students where id = :'sara0'), 'a longer name is not linked automatically');
+-- فحص الاكتمال: من ينقصه سجل سنة سابقة مع المرشحين، وما لم يُنشر
+:as_t1
+select t.expect_error(format($$select public.portal_history_report(%L)$$, :'y'), '%صلاحية%');
+select t.expect_error(format($$select public.portal_link_pair(%L, %L)$$, :'sara', :'sara0'), '%صلاحية%');
+:as_anshead
+select t.expect_error(format($$select public.portal_link_pair(%L, %L)$$, :'sara', :'sara0'), '%صلاحية%');
+:as_radhead
+select public.portal_history_report(:'y') as rep \gset
+select t.ok((select m -> 'candidates' -> 0 ->> 'student_id' = :'sara0' and not (m -> 'candidates' -> 0 ->> 'exact')::boolean and (m ->> 'have')::int = 0
+             from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' = :'sara'),
+            'report: student missing an earlier year, with the similar record as a candidate');
+select t.ok((select count(*) = 0 from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' in (:'st1', :'abd')),
+            'report: students with all earlier years are not listed');
+select t.ok((select count(*) >= 1 from jsonb_array_elements(:'rep'::jsonb -> 'unpublished') u where u ->> 'year' = '2025-2026' and (u ->> 'stage')::int = 1),
+            'report: earlier-year classes whose results are not published');
+select t.expect_error(format($$select public.portal_link_pair(%L, %L)$$, :'sara', :'abd'), '%السنة الدراسية نفسها%');
+select t.ok((public.portal_link_pair(:'sara', :'sara0') ->> 'moved')::int = 1, 'head links the similar record after review');
+select t.ok((select count(*) = 0 from jsonb_array_elements(public.portal_history_report(:'y') -> 'missing') m where m ->> 'student_id' = :'sara'),
+            'report: no longer missing after the manual link');
+reset role;
+set role anon;
+select t.expect_error(format($$select public.portal_history_report(%L)$$, :'y'), '%permission denied%');
+:as_admin
+delete from public.students where year_id = :'y' and full_name in ('عبد الله سالم حمد', 'ساره محمود علي');
+delete from public.students where year_id = :'y0' and full_name in ('عبدالله سالم حمد', 'سارة محمود علي الدليمي');
 -- إنشاء الحسابات في سنة يربط سجلات السنوات الأخرى للحسابات الجديدة أيضاً
 :as_admin
 select public.add_students(:'y0', :'rad', 2::smallint, 'morning', array['طالب جديد تماماً']);

@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { usernameToEmail } from '../lib/password'
 import type {
   PortalCard,
+  PortalHistoryReport,
   PortalKind,
   PortalOverview,
   PortalPublishPayload,
@@ -486,6 +487,14 @@ export class SupabaseBackend implements Backend {
       p_stage: k.stage ?? null,
       p_shift: k.shift ?? null,
     })
+  }
+
+  async portalHistoryReport(yearId: string, departmentId?: string | null): Promise<PortalHistoryReport> {
+    return this.rpc<PortalHistoryReport>('portal_history_report', { p_year_id: yearId, p_department_id: departmentId || null })
+  }
+
+  async portalLinkPair(studentId: string, otherId: string): Promise<{ moved: number }> {
+    return this.rpc<{ moved: number }>('portal_link_pair', { p_student_id: studentId, p_other_id: otherId })
   }
 
   async portalCards(k: ClassKey): Promise<PortalCard[]> {

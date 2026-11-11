@@ -1,5 +1,6 @@
 import type {
   PortalCard,
+  PortalHistoryReport,
   PortalKind,
   PortalOverview,
   PortalPublishPayload,
@@ -109,6 +110,10 @@ export interface Backend {
   portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }): Promise<{ created: number; linked: number; history?: number }>
   /** يربط سجلات الطلبة في السنوات الأخرى بحساباتهم ليروا كل مراحلهم (لقسم واحد، أو لكل الأقسام عند إغفاله) */
   portalLinkHistory(departmentId?: string | null): Promise<{ linked: number }>
+  /** من ينقصه سجل سنة سابقة في البوابة (مع مرشحين للربط)، وما لم يُنشر من نتائج السنوات السابقة */
+  portalHistoryReport(yearId: string, departmentId?: string | null): Promise<PortalHistoryReport>
+  /** ربط يدوي بين سجلين للطالب نفسه في سنتين مختلفتين */
+  portalLinkPair(studentId: string, otherId: string): Promise<{ moved: number }>
   portalCards(k: ClassKey): Promise<PortalCard[]>
   portalResetCode(studentId: string): Promise<{ login_id: string; code: string }>
   portalPublish(p: PortalPublishPayload): Promise<{ students: number }>
