@@ -47,13 +47,13 @@ export function PrintHeader({
   )
 }
 
-export function PrintSignatures({ labels }: { labels: string[] }) {
+export function PrintSignatures({ labels, names, compact }: { labels: string[]; names?: (string | null | undefined)[]; compact?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-around', marginTop: '28px', fontSize: '11pt', breakInside: 'avoid' }}>
-      {labels.map((l) => (
-        <div key={l} style={{ textAlign: 'center', minWidth: '130px' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-around', gap: '10px', marginTop: compact ? '14px' : '28px', fontSize: compact ? '10.5pt' : '11pt', breakInside: 'avoid' }}>
+      {labels.map((l, i) => (
+        <div key={l} style={{ textAlign: 'center', minWidth: compact ? '120px' : '130px' }}>
           <div style={{ fontWeight: 700 }}>{l}</div>
-          <div style={{ marginTop: '34px', borderTop: '1px dotted #555', paddingTop: '2px', fontSize: '9pt', color: '#555' }}>التوقيع</div>
+          <div style={{ marginTop: compact ? '26px' : '34px', borderTop: '1px dotted #555', paddingTop: '2px', fontSize: '9pt', color: names?.[i] ? '#111' : '#555' }}>{names?.[i] || 'التوقيع'}</div>
         </div>
       ))}
     </div>

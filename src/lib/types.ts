@@ -86,6 +86,12 @@ export interface Student extends ClassKey {
   gender?: 'male' | 'female' | null
   /** عملية الترحيل التي أنشأت الطالب (للتراجع) */
   legacy_import_id?: string | null
+  /** النتيجة محجوبة مؤقتاً عن بوابة الطالب وصفحة التحقق (الدرجات لا تتغير) */
+  result_withheld?: boolean
+  /** ملاحظة تظهر للطالب في البوابة */
+  withheld_reason?: string | null
+  withheld_at?: string | null
+  withheld_by_name?: string | null
 }
 
 export interface Subject extends ClassKey {
@@ -333,6 +339,8 @@ export interface VerifiedResult {
   year: string | null
   settings: Pick<Settings, 'university_name' | 'college_name' | 'pass_mark' | 'grade_scale' | 'average_mode' | 'max_failed_subjects'>
   subjects: VerifiedSubject[]
+  /** النتيجة محجوبة مؤقتاً: لا تُعرض موادها في صفحة التحقق */
+  withheld?: boolean
 }
 
 // ---------------------------------------------------------------------
@@ -385,11 +393,25 @@ export interface PortalChange {
   changed_at: string | null
 }
 
+/** طالب حُجبت نتيجته مؤقتاً */
+export interface PortalWithheld {
+  student_id: string
+  full_name: string
+  department_id: string
+  stage: number
+  shift: Shift
+  reason: string | null
+  at: string | null
+  by_name: string | null
+}
+
 export interface PortalOverview {
   settings: PortalSettings
   classes: PortalClassInfo[]
   publications: PortalPublication[]
   changes: PortalChange[]
+  /** النتائج المحجوبة في السنة (غير موجودة قبل تحديث قاعدة البيانات إلى الإصدار 7) */
+  withheld?: PortalWithheld[]
 }
 
 export interface PortalCard {

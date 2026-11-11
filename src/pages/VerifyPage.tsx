@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, BadgeCheck, LogIn, ShieldX } from 'lucide-react'
+import { AlertTriangle, BadgeCheck, LogIn, ShieldX, EyeOff } from 'lucide-react'
 import { buildVerifiedReport } from '../app/results'
 import { formatCode } from '../components/ResultSlip'
 import { Spinner, cx } from '../components/ui'
@@ -63,6 +63,20 @@ export function VerifyPage({ code }: { code: string }) {
             لم يُعثر على نتيجة بالرمز <b dir="ltr">{formatCode(code.replace(/[^0-9A-Za-z]/g, '').toUpperCase())}</b>. تأكد من مسح الرمز المطبوع على النتيجة الأصلية، وأي
             اختلاف بين الورقة وهذه الصفحة يعني أن الورقة غير صادرة من النظام.
           </Notice>
+        ) : v.withheld ? (
+          <div className="space-y-5">
+            <Notice tone="warn" icon={<EyeOff className="size-6" />} title="النتيجة محجوبة مؤقتاً">
+              نتيجة هذا الطالب محجوبة حالياً بقرار من اللجنة الامتحانية، ولا تُعرض تفاصيلها حتى رفع الحجب. لأي استفسار راجع اللجنة الامتحانية في الكلية.
+            </Notice>
+            <section className="rounded-xl border border-[#d3d9e2] bg-white p-5 shadow-sm">
+              <dl className="grid gap-x-6 gap-y-2.5 text-sm sm:grid-cols-2">
+                <Info label="اسم الطالب" value={v.student.full_name} wide />
+                <Info label="القسم" value={v.department?.name ?? '—'} />
+                <Info label="المرحلة" value={stageLabel(v.student.stage).replace('المرحلة ', '')} />
+                <Info label="العام الدراسي" value={yearLabel(v.year ?? undefined) || '—'} />
+              </dl>
+            </section>
+          </div>
         ) : (
           <div className="space-y-5">
             <Notice tone={pending ? 'warn' : 'ok'} icon={pending ? <AlertTriangle className="size-6" /> : <BadgeCheck className="size-6" />} title={pending ? 'نتيجة موثقة جزئياً' : 'النتيجة موثقة'}>

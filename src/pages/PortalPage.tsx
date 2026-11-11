@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users, Eye, EyeOff, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { PORTAL_ITEMS, buildPortalSnapshots, isStalePublication, portalLoginUrl, publishBlocker } from '../app/portal'
 import { printPage, usePrinting } from '../app/print'
 import { useSession } from '../app/session'
@@ -11,7 +12,8 @@ import { backend } from '../data'
 import { fmtDateTime } from '../lib/format'
 import { SHIFT_LABEL, stageLabel } from '../lib/labels'
 import { canViewAll } from '../lib/perm'
-import type { ClassKey, PortalCard, PortalChange, PortalClassInfo, PortalKind, PortalOverview, PortalPublication, PortalTerm } from '../lib/types'
+import { WithholdDialog } from '../components/WithholdDialog'
+import type { ClassKey, PortalCard, PortalChange, PortalClassInfo, PortalKind, PortalOverview, PortalPublication, PortalTerm, PortalWithheld } from '../lib/types'
 import { NotFoundPage } from './NotFoundPage'
 
 export function PortalPage() {
@@ -32,6 +34,7 @@ function Portal() {
   const [dept, setDept] = useState(isHead ? (s.profile.department_id ?? '') : '')
   const [busy, setBusy] = useState<string | null>(null)
   const [cardsOf, setCardsOf] = useState<PortalClassInfo | null>(null)
+  const [lifting, setLifting] = useState<PortalWithheld | null>(null)
 
   const q = useQuery({ queryKey: ['portal', s.yearId], queryFn: () => backend.portalOverview(s.yearId), enabled: !!s.yearId })
   const ov = q.data
@@ -195,6 +198,8 @@ function Portal() {
     }
   }
 
+  const withheld = (ov?.withheld ?? []).filter((w) => !dept || w.department_id === dept)
+
   if (q.isLoading) return <LoadingBlock />
   if (q.isError || !ov) return <Callout tone="danger">{errorText(q.error)}</Callout>
 
@@ -325,6 +330,66 @@ function Portal() {
         )}
       </Card>
 
+      {/* النتائج المحجوبة مؤقتاً */}
+      <Card>
+        <CardHeader
+          icon={<EyeOff className="size-5" />}
+          title={`النتائج المحجوبة${withheld.length ? ` (${withheld.length})` : ''}`}
+          subtitle="طالب تُحجب نتيجته لا يراها في البوابة ولا في صفحة التحقق حتى يُرفع الحجب؛ سعيه يبقى ظاهراً"
+          actions={
+            canViewAll(s.profile) && (
+              <Link to="/students">
+                <Button icon={<Search className="size-4" />}>حجب نتيجة طالب</Button>
+              </Link>
+            )
+          }
+        />
+        {withheld.length === 0 ? (
+          <p className="px-5 pb-5 text-sm text-muted">
+            لا توجد نتائج محجوبة. لحجب نتيجة طالب: ابحث عنه وافتح صفحته ثم اضغط «حجب النتيجة».
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>الطالب</th>
+                  <th>الصف الدراسي</th>
+                  <th>الملاحظة الظاهرة للطالب</th>
+                  <th>تاريخ الحجب</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {withheld.map((w) => (
+                  <tr key={w.student_id}>
+                    <td className="font-medium">
+                      <Link to={`/student/${w.student_id}`} className="hover:text-primary-text hover:underline">
+                        {w.full_name}
+                      </Link>
+                    </td>
+                    <td className="text-sm text-muted">
+                      {s.deptById(w.department_id)?.name} — {stageLabel(w.stage)} — {SHIFT_LABEL[w.shift]}
+                    </td>
+                    <td className="max-w-72 text-sm">{w.reason || <span className="text-faint">—</span>}</td>
+                    <td className="text-sm whitespace-nowrap text-muted" title={w.by_name ?? undefined}>
+                      {w.at ? fmtDateTime(w.at) : '—'}
+                    </td>
+                    <td className="text-end">
+                      {canViewAll(s.profile) && (
+                        <Button size="sm" icon={<Eye className="size-3.5" />} onClick={() => setLifting(w)}>
+                          رفع الحجب
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <Callout tone="info" title="كيف تعمل البوابة؟">
         <ul className="mt-1 list-disc space-y-1 ps-5">
           <li>البوابة تطبيق منفصل: الطالب لا يدخل إلى نظام اللجنة ولا يقرأ جداول الدرجات، بل نسخة جاهزة تُحفظ عند الضغط على «نشر».</li>
@@ -335,6 +400,9 @@ function Portal() {
       </Callout>
       </div>
 
+      {lifting && (
+        <WithholdDialog student={{ id: lifting.student_id, full_name: lifting.full_name, result_withheld: true, withheld_reason: lifting.reason }} onClose={() => setLifting(null)} onDone={refresh} />
+      )}
       {cardsOf && <CardsModal cls={cardsOf} classKey={keyOf(cardsOf)} title={title(cardsOf)} portalUrl={ov.settings.portal_url} onClose={() => setCardsOf(null)} onChanged={refresh} />}
     </div>
   )

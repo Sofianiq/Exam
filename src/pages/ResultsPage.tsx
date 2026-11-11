@@ -1,4 +1,4 @@
-import { Award, CheckCircle2, CircleSlash, Eye, Hourglass, Printer, Search, Users, XCircle } from 'lucide-react'
+import { Award, CheckCircle2, CircleSlash, Eye, EyeOff, Hourglass, Printer, Search, Users, XCircle } from 'lucide-react'
 import { printPage, usePrinting } from '../app/print'
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -94,7 +94,9 @@ export function ResultsPage() {
   const t = normalizeArabic(q)
   const shown = rows.filter((r) => (filter === 'all' || (r.student.status === 'active' && MATCH[filter].includes(r.status))) && (!t || normalizeArabic(r.student.full_name).includes(t)))
   const shownActive = shown.filter((r) => r.student.status === 'active')
-  const toPrint = picked.size ? shown.filter((r) => picked.has(r.student.id)) : shownActive
+  // النتائج المحجوبة لا تُطبع مع الطباعة الجماعية؛ تُطبع فقط إذا حُدِّدت يدوياً
+  const withheldShown = shownActive.filter((r) => r.student.result_withheld).length
+  const toPrint = picked.size ? shown.filter((r) => picked.has(r.student.id)) : shownActive.filter((r) => !r.student.result_withheld)
   const year = yearLabel(s.year?.label)
   const slips: SlipProps[] = toPrint.map((r) => ({ student: r.student, dept, yearLabel: year, settings: s.settings, report: r.report, scope }))
   const passed = count('pass')
@@ -186,6 +188,12 @@ export function ResultsPage() {
           </Callout>
         )}
 
+        {withheldShown > 0 && (
+          <Callout tone="danger" className="mb-5" icon={<EyeOff className="size-5" />} title={`${withheldShown} ${withheldShown === 1 ? 'نتيجة محجوبة' : 'نتائج محجوبة'} في هذه القائمة`}>
+            النتائج المحجوبة لا تظهر للطلبة في بوابة الطالب ولا تُطبع مع «طباعة النتائج»؛ لطباعة إحداها حدّدها يدوياً، ولرفع الحجب افتح صفحة الطالب.
+          </Callout>
+        )}
+
         <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           <StatCard label="عدد الطلبة" value={active.length} icon={<Users className="size-5" />} />
           <StatCard label="الناجحون" value={passed} hint={decided ? `نسبة النجاح ${fmtPct(passed / decided)}` : undefined} icon={<CheckCircle2 className="size-5" />} tone="success" />
@@ -254,6 +262,11 @@ export function ResultsPage() {
                           <Link to={`/student/${r.student.id}`} className="hover:text-primary-text hover:underline">
                             {r.student.full_name}
                           </Link>
+                          {r.student.result_withheld && (
+                            <Badge tone="danger" className="ms-2" icon={<EyeOff className="size-3" />}>
+                              محجوبة
+                            </Badge>
+                          )}
                         </td>
                         <td className="text-center tabular-nums">{fmtNum(r.summary?.average) || '—'}</td>
                         <td className="text-center font-semibold text-primary-text">{r.summary?.averageLabel ?? '—'}</td>

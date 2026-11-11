@@ -1,28 +1,43 @@
 import { Award, FileSpreadsheet, IdCard, Printer, Sheet } from 'lucide-react'
 import { printPage, usePrinting } from '../app/print'
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useInvalidate } from '../app/queries'
 import { useClassResults, type StudentResultRow } from '../app/results'
 import { useSession } from '../app/session'
 import { backend } from '../data'
-import { bandCounts, type RowResult } from '../lib/calc'
-import { displayName, fmtNum, fmtPct, unitsLabel, yearLabel } from '../lib/format'
-import { SHIFT_LONG, SPECIAL_LABEL, STATUS_LABEL, TERM_LABEL } from '../lib/labels'
+import { bandCounts } from '../lib/calc'
+import { displayName, fmtDate, fmtNum, fmtPct, unitsLabel, yearLabel } from '../lib/format'
+import { SHIFT_LONG, STATUS_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canManageDepartment } from '../lib/perm'
-import type { ClassKey, Subject, Term } from '../lib/types'
+import type { ClassKey, SpecialCode, Subject, Term } from '../lib/types'
 import { useConfirm, useToast } from './feedback'
-import { PrintHeader, PrintSignatures } from './PrintParts'
-import { Badge, Button, Callout, Card, CardHeader, EmptyState, LoadingBlock, cx } from './ui'
+import { PrintSignatures } from './PrintParts'
+import { Badge, Button, Callout, Card, CardHeader, EmptyState, LoadingBlock, Segmented, cx } from './ui'
 
-const STATUS_COLOR: Record<string, string> = {
-  pass: 'text-success',
-  pass_r2: 'text-success',
-  pass_carry: 'text-success',
-  carry: 'text-warning',
-  fail: 'text-danger',
-  incomplete: 'text-muted',
-  none: 'text-muted',
+/** لون خانة النتيجة حسب حالة الطالب */
+const STATUS_CLASS: Record<string, string> = {
+  pass: 'ms-st-pass',
+  pass_r2: 'ms-st-pass',
+  pass_carry: 'ms-st-pass',
+  carry: 'ms-st-carry',
+  fail: 'ms-st-fail',
+  incomplete: 'ms-st-muted',
+  none: 'ms-st-muted',
+}
+
+/** الحالات الخاصة برمز مختصر داخل الأعمدة الضيقة (كما تُكتب عند إدخال الدرجات) */
+const SPECIAL_SHORT: Record<SpecialCode, string> = { absent: 'غ', banned: 'ح', postponed: 'م' }
+
+/** ورقة الطباعة: A3 أفقية (الأوضح) أو A4 أفقية */
+type Paper = 'a3' | 'a4'
+const PAPER_KEY = 'exam.master.paper'
+const readPaper = (): Paper => {
+  try {
+    return localStorage.getItem(PAPER_KEY) === 'a4' ? 'a4' : 'a3'
+  } catch {
+    return 'a3'
+  }
 }
 
 export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term | 0 }) {
@@ -31,6 +46,15 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
   const toast = useToast()
   const confirm = useConfirm()
   const invalidate = useInvalidate()
+  const [paper, setPaperState] = useState<Paper>(readPaper)
+  const setPaper = (p: Paper) => {
+    setPaperState(p)
+    try {
+      localStorage.setItem(PAPER_KEY, p)
+    } catch {
+      /* التخزين معطل: يبقى الاختيار للجلسة الحالية */
+    }
+  }
   const data = useClassResults(classKey, term, s.settings)
   const dept = s.deptById(classKey.department_id)
   const termLabel = term === 0 ? 'النتيجة السنوية' : TERM_LABEL[term]
@@ -133,11 +157,20 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
                     نتائج الطلبة (طباعة)
                   </Button>
                 </Link>
+                <Segmented<Paper>
+                  size="sm"
+                  value={paper}
+                  onChange={setPaper}
+                  options={[
+                    { value: 'a3', label: 'ورق A3' },
+                    { value: 'a4', label: 'ورق A4' },
+                  ]}
+                />
                 <Button
                   size="sm"
                   icon={<Printer className="size-4" />}
                   onClick={() => {
-                    void backend.logEvent('report.print', `طباعة الماستر شيت — ${dept?.name} — المرحلة ${classKey.stage}`)
+                    void backend.logEvent('report.print', `طباعة الماستر شيت (${paper.toUpperCase()}) — ${dept?.name} — المرحلة ${classKey.stage}`)
                     printPage()
                   }}
                 >
@@ -149,8 +182,9 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
               </>
             }
           />
-          <div className="max-h-[72vh] overflow-auto scrollbar-thin">
-            <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} onNote={manage ? editNote : undefined} />
+          <MasterLegend compact={compact} />
+          <div className="max-h-[74vh] overflow-auto scrollbar-thin">
+            <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} onNote={manage ? editNote : undefined} />
           </div>
         </Card>
 
@@ -204,10 +238,46 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
 
       {/* نسخة الطباعة (أفقي) — تُرسم عند الطباعة فقط */}
       {printing && (
-        <div className="print-only print-landscape">
-          <PrintHeader classKey={classKey} term={term} title={`الماستر شيت لدرجات الطلبة — ${SHIFT_LONG[classKey.shift]}`} />
-          <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} term={term} print />
-          <PrintSignatures labels={['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد']} />
+        <div className={cx('print-only', paper === 'a3' ? 'print-ms-a3' : 'print-ms-a4')} data-master-print={paper}>
+          {/* ترويسة مضغوطة: تترك أكبر مساحة ممكنة للجدول */}
+          <header className="ms-print-head">
+            <div className="ms-print-side">
+              <b>{s.settings.university_name}</b>
+              <span>{s.settings.college_name}</span>
+              <span>قسم {dept?.name}</span>
+            </div>
+            <div className="ms-print-title">
+              <img src="./logo.png" alt="" />
+              <div>
+                <h1>الماستر شيت لدرجات الطلبة</h1>
+                <p>
+                  المرحلة {stageShort(classKey.stage)} — {SHIFT_LONG[classKey.shift]} — {termLabel}
+                </p>
+              </div>
+            </div>
+            <div className="ms-print-side ms-print-end">
+              <b>اللجنة الامتحانية</b>
+              <span>العام الدراسي: {yearLabel(s.years.find((y) => y.id === classKey.year_id)?.label)}</span>
+              <span>تاريخ الطباعة: {fmtDate(new Date())}</span>
+            </div>
+          </header>
+          <div className="ms-print-meta">
+            <span>عدد الطلبة: {rows.length}</span>
+            <span>عدد المواد: {n}</span>
+            <span>مجموع الوحدات: {totalUnits}</span>
+            <span>درجة النجاح: {s.settings.pass_mark}</span>
+            <span>
+              المواد المعتمدة: {approved} من {n}
+            </span>
+            <span>المعدل: {s.settings.average_mode === 'weighted' ? 'موزون بالوحدات' : 'حسابي بسيط'}</span>
+          </div>
+          <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} print paper={paper} />
+          <MasterLegend compact={compact} print />
+          <PrintSignatures
+            compact
+            labels={['مقرر القسم', 'المدقق', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'عميد الكلية']}
+            names={[null, null, dept?.head_name, s.settings.committee_head_name, s.settings.dean_name]}
+          />
         </div>
       )}
     </>
@@ -226,80 +296,138 @@ const EMPTY_VALUES = {
   r2_special: null,
 }
 
+/** مفتاح قراءة ألوان ورموز الماستر شيت (على الشاشة وفي الطباعة) */
+function MasterLegend({ compact, print }: { compact: boolean; print?: boolean }) {
+  return (
+    <div className={cx('ms-legend', print ? 'ms-legend-print' : 'border-b border-line px-5 py-2.5')}>
+      <b>مفتاح القراءة:</b>
+      {!compact && (
+        <>
+          <span>
+            <i className="ms-chip ms-chip-cw" /> السعي
+          </span>
+          <span>
+            <i className="ms-chip ms-chip-fin" /> الامتحان النهائي
+          </span>
+        </>
+      )}
+      <span>
+        <i className="ms-chip ms-chip-tot" /> {compact ? 'الدرجة النهائية للمادة' : 'المجموع'}
+      </span>
+      <span>
+        <i className="ms-chip ms-chip-fail" /> درجة راسبة
+      </span>
+      {!compact && (
+        <span>
+          <i className="ms-chip ms-chip-r2" /> الدور الثاني (د2)
+        </span>
+      )}
+      <span>غ = غائب</span>
+      <span>ح = محروم</span>
+      <span>م = مؤجل</span>
+      <span>ق = ناجح بقرار</span>
+    </div>
+  )
+}
+
+/**
+ * جدول الماستر شيت: أسماء المواد ووحداتها عمودية لتضييق الأعمدة، وأعمدة السعي والنهائي والمجموع
+ * ملوّنة بألوان ثابتة لتسهيل التدقيق، مع فاصل سميك بين المواد وبعد كل خمسة طلبة.
+ */
 function MasterTable({
   subjects,
   rows,
   compact,
   subjectStats,
-  term,
   print,
+  paper = 'a3',
   onNote,
 }: {
   subjects: Subject[]
   rows: StudentResultRow[]
   compact: boolean
   subjectStats: ReturnType<typeof useClassResults>['subjectStats']
-  term: Term | 0
   print?: boolean
+  paper?: Paper
   onNote?: (r: StudentResultRow) => void
 }) {
   const per = compact ? 1 : 3
-  const finalText = (r: RowResult) => (r.special ? SPECIAL_LABEL[r.special] : fmtNum(r.finalSum))
-  const th = print ? '' : 'px-1.5 py-2 text-center text-[0.72rem] font-semibold text-muted'
-  const td = print ? '' : 'px-1 text-center tabular-nums'
-  const sticky0 = print ? '' : 'sticky-col start-0'
-  const sticky1 = print ? '' : 'sticky-col start-11'
+  const cols = subjects.length * per
+  // حجم خط الطباعة حسب الورقة وعدد أعمدة الدرجات
+  const fontSize = !print ? undefined : paper === 'a3' ? (cols > 45 ? '6.6pt' : cols > 33 ? '7.6pt' : '8.8pt') : cols > 36 ? '5.4pt' : cols > 24 ? '6.3pt' : '7.4pt'
+  // في النتيجة السنوية تُجمع المواد تحت عنوان فصلها
+  const termGroups = compact ? [1, 2].map((t) => ({ term: t as Term, count: subjects.filter((x) => x.term === t).length })).filter((g) => g.count > 0) : []
+  const grouped = termGroups.length > 1
+  const headRows = grouped || !compact ? 2 : 1
+  const startsGroup = (j: number) => !compact || j === 0 || subjects[j].term !== subjects[j - 1].term
+
+  const subjectHead = (x: Subject, j: number) => (
+    <th key={x.id} colSpan={per} className={cx('ms-subject', startsGroup(j) && 'ms-g0')}>
+      <span className="ms-v">
+        <span className="ms-subject-name">{x.name}</span>
+        <span className="ms-subject-units">
+          {unitsLabel(x.units)}
+          {x.ministerial ? ' · وزارية' : ''}
+        </span>
+      </span>
+      {!print && (
+        <span className="mt-1 flex justify-center">
+          <StatusDot status={x.status} />
+        </span>
+      )}
+    </th>
+  )
 
   return (
-    <table className={print ? 'print-table master-print' : 'grade-grid w-full min-w-[1000px] text-sm'} style={print ? { fontSize: subjects.length * per > 24 ? '7pt' : '8.5pt' } : undefined}>
+    <table className={cx('ms', print ? 'ms-print' : 'ms-screen', compact && 'ms-compact')} style={fontSize ? { fontSize } : undefined}>
       <thead>
         <tr>
-          <th rowSpan={compact ? 1 : 2} className={cx(sticky0, !print && 'w-11 px-2 text-xs text-muted')}>
+          <th rowSpan={headRows} className="ms-seq">
             ت
           </th>
-          <th rowSpan={compact ? 1 : 2} className={cx(sticky1, !print && 'min-w-52 px-3 text-start text-xs text-muted')}>
+          <th rowSpan={headRows} className="ms-name">
             اسم الطالب
           </th>
-          {subjects.map((x) => (
-            <th key={x.id} colSpan={per} className={cx(!print && 'min-w-28 border-b px-1.5 py-2 text-center align-bottom text-[0.72rem] font-bold leading-tight text-ink')}>
-              {!print && (
-                <span className="mb-1 flex justify-center">
-                  <StatusDot status={x.status} />
-                </span>
-              )}
-              {x.name}
-              <span className={cx('block font-normal', !print && 'text-faint')}>
-                {unitsLabel(x.units)}
-                {term === 0 ? ` — ف${x.term}` : ''}
-                {x.ministerial ? ' — وزارية' : ''}
-              </span>
-            </th>
-          ))}
-          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'w-16 bg-surface-3! px-2 text-center text-xs font-bold')}>
-            مجموع الدرجات
+          {grouped
+            ? termGroups.map((g) => (
+                <th key={g.term} colSpan={g.count} className="ms-term ms-g0">
+                  {TERM_LABEL[g.term]}
+                </th>
+              ))
+            : subjects.map(subjectHead)}
+          <th rowSpan={headRows} className="ms-sum ms-g0">
+            <span className="ms-v">مجموع الدرجات</span>
           </th>
-          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'w-16 bg-gold-soft! px-2 text-center text-xs font-bold')}>
-            المعدل
+          <th rowSpan={headRows} className="ms-avg">
+            <span className="ms-v">المعدل</span>
           </th>
-          {!print && (
-            <th rowSpan={compact ? 1 : 2} className="w-12 px-2 text-center text-xs text-muted">
-              الترتيب
-            </th>
-          )}
-          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'min-w-36 px-2 text-start text-xs text-muted')}>
+          <th rowSpan={headRows} className="ms-rank">
+            <span className="ms-v">الترتيب</span>
+          </th>
+          <th rowSpan={headRows} className="ms-result">
             النتيجة
           </th>
-          <th rowSpan={compact ? 1 : 2} className={cx(!print && 'min-w-32 px-2 text-start text-xs text-muted')}>
+          <th rowSpan={headRows} className="ms-notes">
             الملاحظات
           </th>
         </tr>
+        {grouped && <tr>{subjects.map(subjectHead)}</tr>}
         {!compact && (
           <tr>
             {subjects.map((x) => (
               <Fragment key={x.id}>
-                <th className={th}>سعي ({x.coursework_max})</th>
-                <th className={th}>نهائي ({x.final_max + x.practical_max})</th>
-                <th className={th}>المجموع</th>
+                <th className="ms-sub ms-cw ms-g0">
+                  <span className="ms-v">السعي</span>
+                  <b>{x.coursework_max}</b>
+                </th>
+                <th className="ms-sub ms-fin">
+                  <span className="ms-v">النهائي</span>
+                  <b>{x.final_max + x.practical_max}</b>
+                </th>
+                <th className="ms-sub ms-tot">
+                  <span className="ms-v">المجموع</span>
+                  <b>100</b>
+                </th>
               </Fragment>
             ))}
           </tr>
@@ -311,13 +439,16 @@ function MasterTable({
           const hasR2 = !compact && row.results.some((r) => r.complete && r.needsR2)
           const span = hasR2 ? 2 : 1
           const sum = row.summary
+          // فاصل سميك بعد كل خمسة طلبة لتسهيل تتبع الصفوف عند التدقيق
+          const five = (i + 1) % 5 === 0
+          const b5 = five && 'ms-b5'
           return (
             <Fragment key={row.student.id}>
-              <tr className={cx(inactive && 'opacity-50')}>
-                <td rowSpan={span} className={cx(sticky0, !print && 'px-2 py-1.5 text-center text-xs tabular-nums text-muted')}>
+              <tr className={cx(inactive && 'ms-inactive', five && !hasR2 && 'ms-five')}>
+                <td rowSpan={span} className={cx('ms-seq', b5)}>
                   {i + 1}
                 </td>
-                <td rowSpan={span} className={cx(sticky1, print ? 'name' : 'px-3 py-1.5 font-medium whitespace-nowrap')}>
+                <td rowSpan={span} className={cx('ms-name', b5)}>
                   {print ? (
                     row.student.full_name
                   ) : (
@@ -328,38 +459,43 @@ function MasterTable({
                 </td>
                 {row.results.map((r, j) =>
                   compact ? (
-                    <td key={j} className={cx(td, r.finalPassed === false && r.finalTotal != null && 'font-bold text-danger print-fail', r.finalSpecial && 'text-xs text-warning')}>
-                      {r.finalSpecial ? SPECIAL_LABEL[r.finalSpecial] : fmtNum(r.finalTotal)}
-                      {r.finalRound === 2 && <sup className="ms-0.5 text-gold-text">د2</sup>}
+                    <td key={j} className={cx('ms-tot', startsGroup(j) && 'ms-g0', r.finalPassed === false && r.finalTotal != null && 'ms-fail print-fail', r.finalSpecial && 'ms-special')}>
+                      {r.finalSpecial ? SPECIAL_SHORT[r.finalSpecial] : fmtNum(r.finalTotal)}
+                      {r.finalRound === 2 && <sup className="ms-mark-r2">د2</sup>}
                       {r.byDecision && (
-                        <sup className="ms-0.5 text-info" title="ناجح بقرار">
+                        <sup className="ms-mark-dec" title="ناجح بقرار">
                           ق
                         </sup>
                       )}
                     </td>
                   ) : (
                     <Fragment key={j}>
-                      <td className={cx(td, !print && 'text-muted')}>{fmtNum(r.coursework)}</td>
-                      <td className={cx(td, r.special && 'text-xs text-warning')}>{finalText(r)}</td>
-                      <td className={cx(td, 'font-semibold', r.passed === false && r.total != null && 'text-danger print-fail')}>{fmtNum(r.total)}</td>
+                      <td className="ms-cw ms-g0">{fmtNum(r.coursework)}</td>
+                      <td className={cx('ms-fin', r.special && 'ms-special')}>{r.special ? SPECIAL_SHORT[r.special] : fmtNum(r.finalSum)}</td>
+                      <td className={cx('ms-tot', r.passed === false && r.total != null && 'ms-fail print-fail')}>
+                        {fmtNum(r.total)}
+                        {r.byDecision && r.finalRound === 1 && (
+                          <sup className="ms-mark-dec" title="ناجح بقرار">
+                            ق
+                          </sup>
+                        )}
+                      </td>
                     </Fragment>
                   ),
                 )}
-                <td rowSpan={span} className={cx(td, !print && 'bg-surface-2/70 font-semibold')}>
+                <td rowSpan={span} className={cx('ms-sum ms-g0', b5)}>
                   {fmtNum(sum.sum)}
                 </td>
-                <td rowSpan={span} className={cx(td, !print && 'bg-gold-soft/50 font-bold')} style={print ? { fontWeight: 700 } : undefined}>
+                <td rowSpan={span} className={cx('ms-avg', b5)}>
                   {fmtNum(sum.average)}
                 </td>
-                {!print && (
-                  <td rowSpan={span} className="px-2 text-center font-semibold tabular-nums">
-                    {row.rank ?? ''}
-                  </td>
-                )}
-                <td rowSpan={span} className={cx(!print && 'px-2 text-xs font-semibold', STATUS_COLOR[sum.status])} style={print ? { fontSize: '7.5pt', whiteSpace: 'normal' } : undefined}>
+                <td rowSpan={span} className={cx('ms-rank', b5)}>
+                  {row.rank ?? ''}
+                </td>
+                <td rowSpan={span} className={cx('ms-result', inactive ? 'ms-st-muted' : STATUS_CLASS[sum.status], b5)}>
                   {inactive ? (row.student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : sum.statusText}
                 </td>
-                <td rowSpan={span} className={cx(!print && 'px-2 text-xs text-muted')} style={print ? { fontSize: '7.5pt', whiteSpace: 'normal' } : undefined}>
+                <td rowSpan={span} className={cx('ms-notes', b5)}>
                   {onNote ? (
                     <button className="w-full text-start hover:text-primary-text" title="تعديل الملاحظة" onClick={() => onNote(row)}>
                       {row.student.notes || <span className="text-faint">+ ملاحظة</span>}
@@ -370,17 +506,20 @@ function MasterTable({
                 </td>
               </tr>
               {hasR2 && (
-                <tr className={cx('text-xs', inactive && 'opacity-50')}>
+                <tr className={cx('ms-r2', inactive && 'ms-inactive', five && 'ms-five')}>
                   {row.results.map((r, j) => {
                     const show = r.complete && r.needsR2
                     return (
                       <Fragment key={j}>
-                        <td className={cx(td, !print && 'bg-gold-soft/40 text-[0.65rem] font-semibold text-gold-text')}>{show ? 'د2' : ''}</td>
-                        <td className={cx(td, !print && 'bg-gold-soft/40', r.r2Special && 'text-warning')}>
-                          {show ? (r.r2Special ? SPECIAL_LABEL[r.r2Special] : fmtNum(r.r2FinalSum)) : ''}
-                        </td>
-                        <td className={cx(td, !print && 'bg-gold-soft/40 font-semibold', show && r.r2Total != null && r.finalPassed === false && 'text-danger print-fail', show && r.r2Total != null && r.finalPassed === true && 'text-success')}>
+                        <td className="ms-g0 ms-r2-tag">{show ? 'د2' : ''}</td>
+                        <td className={cx(show && r.r2Special && 'ms-special')}>{show ? (r.r2Special ? SPECIAL_SHORT[r.r2Special] : fmtNum(r.r2FinalSum)) : ''}</td>
+                        <td className={cx('ms-r2-total', show && r.r2Total != null && r.finalPassed === false && 'ms-fail print-fail', show && r.r2Total != null && r.finalPassed === true && 'ms-ok')}>
                           {show ? fmtNum(r.r2Total) : ''}
+                          {show && r.byDecision && r.finalRound === 2 && (
+                            <sup className="ms-mark-dec" title="ناجح بقرار">
+                              ق
+                            </sup>
+                          )}
                         </td>
                       </Fragment>
                     )
@@ -391,25 +530,28 @@ function MasterTable({
           )
         })}
       </tbody>
-      <tfoot>
+      <tbody className="ms-foot">
         {[
           { label: 'المعدل العام', f: (j: number) => fmtNum(subjectStats[j].avg) },
+          { label: 'أعلى درجة', f: (j: number) => fmtNum(subjectStats[j].max) },
+          { label: 'أدنى درجة', f: (j: number) => fmtNum(subjectStats[j].min) },
           { label: 'عدد الناجحين', f: (j: number) => String(subjectStats[j].pass) },
           { label: 'عدد الراسبين', f: (j: number) => String(subjectStats[j].fail) },
           { label: 'نسبة النجاح', f: (j: number) => fmtPct(subjectStats[j].passRate) },
         ].map((r) => (
-          <tr key={r.label} className={cx(!print && 'bg-surface-2 font-semibold')}>
-            <td className={cx(sticky0, !print && 'bg-surface-2!')} />
-            <td className={cx(sticky1, !print && 'bg-surface-2! px-3 py-2 text-xs')}>{r.label}</td>
+          <tr key={r.label}>
+            <td colSpan={2} className="ms-foot-label">
+              {r.label}
+            </td>
             {subjects.map((_, j) => (
-              <td key={j} colSpan={per} className={cx(!print && 'px-1 py-2 text-center text-xs tabular-nums')}>
+              <td key={j} colSpan={per} className={cx(startsGroup(j) && 'ms-g0')}>
                 {r.f(j)}
               </td>
             ))}
-            <td colSpan={print ? 4 : 5} />
+            <td colSpan={5} className="ms-g0" />
           </tr>
         ))}
-      </tfoot>
+      </tbody>
     </table>
   )
 }

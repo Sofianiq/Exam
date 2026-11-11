@@ -260,6 +260,13 @@ create table if not exists public.portal_accounts (
 alter table public.students add column if not exists portal_account_id uuid references public.portal_accounts (id) on delete set null;
 create index if not exists students_portal_account_idx on public.students (portal_account_id) where portal_account_id is not null;
 
+-- الإصدار 7: حجب نتيجة طالب مؤقتاً عن بوابة الطالب وصفحة التحقق (تبقى الدرجات كما هي داخل النظام)
+alter table public.students add column if not exists result_withheld  boolean not null default false;
+alter table public.students add column if not exists withheld_reason  text;
+alter table public.students add column if not exists withheld_at      timestamptz;
+alter table public.students add column if not exists withheld_by_name text;
+create index if not exists students_withheld_idx on public.students (year_id) where result_withheld;
+
 create table if not exists public.portal_sessions (
   token_hash    text primary key,
   account_id    uuid not null references public.portal_accounts (id) on delete cascade,
@@ -898,6 +905,7 @@ begin
     new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
     new.verify_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16)); -- لا يُختار يدوياً
     if not public.legacy_mode() then new.legacy_import_id := null; end if;
+    new.result_withheld := false; new.withheld_reason := null; new.withheld_at := null; new.withheld_by_name := null;
     return new;
   end if;
   if exists (select 1 from public.grades g where g.student_id = old.id
@@ -915,6 +923,11 @@ begin
   new.full_name := regexp_replace(trim(new.full_name), '\s+', ' ', 'g');
   new.verify_code := old.verify_code; -- رمز التحقق من النتيجة ثابت لا يُعدَّل
   if not public.legacy_mode() then new.legacy_import_id := old.legacy_import_id; end if;
+  -- حجب النتيجة لا يتغير إلا عبر set_result_withheld
+  if coalesce(current_setting('app.withhold', true), '') <> 'on' or not public.can_view_all() then
+    new.result_withheld := old.result_withheld; new.withheld_reason := old.withheld_reason;
+    new.withheld_at := old.withheld_at; new.withheld_by_name := old.withheld_by_name;
+  end if;
   return new;
 end $$;
 
@@ -1296,8 +1309,45 @@ begin
         from public.subjects s
         left join lateral (select max(g.updated_at) as at from public.grades g where g.subject_id = s.id) g on true
         where s.year_id = p_year_id and (v_all or s.department_id = v_dept)
-        group by s.department_id, s.stage, s.shift, s.term) x), '[]'::jsonb)
+        group by s.department_id, s.stage, s.shift, s.term) x), '[]'::jsonb),
+    'withheld', coalesce((
+      select jsonb_agg(jsonb_build_object('student_id', st.id, 'full_name', st.full_name, 'department_id', st.department_id,
+                         'stage', st.stage, 'shift', st.shift, 'reason', st.withheld_reason,
+                         'at', st.withheld_at, 'by_name', st.withheld_by_name)
+                       order by st.withheld_at desc nulls last, st.full_name)
+      from public.students st
+      where st.year_id = p_year_id and st.result_withheld and (v_all or st.department_id = v_dept)), '[]'::jsonb)
   );
+end $$;
+
+-- حجب نتيجة طالب مؤقتاً (أو رفع الحجب): صلاحية الإدارة العليا واللجنة الامتحانية.
+-- الأثر فوري دون إعادة نشر: تختفي نتائج الطالب ورمز التحقق من بوابة الطالب، وتعرض صفحة التحقق العامة أنها محجوبة.
+-- الدرجات والنتائج داخل النظام لا تتغير، والسعي المنشور يبقى ظاهراً للطالب.
+create or replace function public.set_result_withheld(p_student_id uuid, p_withheld boolean, p_reason text default null)
+returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  st public.students;
+  v_on boolean := coalesce(p_withheld, false);
+  v_reason text := nullif(left(trim(coalesce(p_reason, '')), 300), '');
+begin
+  if not public.can_view_all() then
+    raise exception 'حجب النتيجة من صلاحية الإدارة واللجنة الامتحانية فقط' using errcode = '42501';
+  end if;
+  select * into st from public.students where id = p_student_id;
+  if not found then raise exception 'الطالب غير موجود'; end if;
+  perform set_config('app.withhold', 'on', true);
+  update public.students set
+    result_withheld = v_on,
+    withheld_reason = case when v_on then v_reason end,
+    withheld_at = case when v_on then now() end,
+    withheld_by_name = case when v_on then (select p.full_name from public.profiles p where p.id = auth.uid()) end
+  where id = p_student_id;
+  perform set_config('app.withhold', 'off', true);
+  perform public.write_audit(case when v_on then 'student.withhold' else 'student.unwithhold' end,
+    'student', st.id::text, st.department_id,
+    case when v_on then 'حجب نتيجة الطالب: ' else 'رفع حجب نتيجة الطالب: ' end || st.full_name,
+    case when v_on then jsonb_build_object('reason', v_reason) end);
 end $$;
 
 create or replace function public.portal_save_settings(p_enabled boolean, p_portal_url text, p_exam_url text, p_notice text)
@@ -1512,11 +1562,15 @@ language sql stable security definer set search_path = '' as $$
       select jsonb_agg(jsonb_build_object(
                'student_id', s.id, 'full_name', s.full_name, 'year', y.label,
                'department', d.name, 'department_id', d.id, 'stage', s.stage, 'shift', s.shift, 'status', s.status,
-               'verify_code', s.verify_code,
+               -- النتيجة المحجوبة: لا تُرسل النتائج ولا رمز التحقق، ويبقى السعي ظاهراً
+               'verify_code', case when s.result_withheld then null else s.verify_code end,
+               'withheld', s.result_withheld,
+               'withheld_note', case when s.result_withheld then s.withheld_reason end,
                'items', coalesce((select jsonb_agg(jsonb_build_object('term', sn.term, 'kind', sn.kind,
                                                    'published_at', sn.published_at, 'data', sn.data)
                                                    order by sn.kind, sn.term)
-                                  from public.portal_snapshots sn where sn.student_id = s.id), '[]'::jsonb))
+                                  from public.portal_snapshots sn
+                                  where sn.student_id = s.id and (not s.result_withheld or sn.kind <> 'results')), '[]'::jsonb))
              order by y.label desc, s.stage desc)
       from public.students s
       join public.academic_years y on y.id = s.year_id
@@ -1785,6 +1839,7 @@ begin
   if not found then return null; end if;
   return jsonb_build_object(
     'code', v_st.verify_code,
+    'withheld', v_st.result_withheld,
     'student', jsonb_build_object('full_name', v_st.full_name, 'stage', v_st.stage, 'shift', v_st.shift,
                                   'status', v_st.status, 'seq', v_st.seq),
     'department', (select jsonb_build_object('name', d.name, 'head_name', d.head_name)
@@ -1812,7 +1867,8 @@ begin
       from public.subjects s
       left join public.grades g on g.subject_id = s.id and g.student_id = v_st.id
       where s.year_id = v_st.year_id and s.department_id = v_st.department_id
-        and s.stage = v_st.stage and s.shift = v_st.shift), '[]'::jsonb)
+        and s.stage = v_st.stage and s.shift = v_st.shift
+        and not v_st.result_withheld), '[]'::jsonb) -- النتيجة المحجوبة لا تُعرض موادها
   );
 end $$;
 
@@ -2143,7 +2199,8 @@ grant execute on function
   public.portal_overview(uuid), public.portal_save_settings(boolean, text, text, text),
   public.portal_generate_accounts(uuid, uuid, smallint, text), public.portal_cards(uuid, uuid, smallint, text),
   public.portal_reset_code(uuid), public.portal_publish(jsonb),
-  public.portal_unpublish(uuid, uuid, smallint, text, smallint, text)
+  public.portal_unpublish(uuid, uuid, smallint, text, smallint, text),
+  public.set_result_withheld(uuid, boolean, text)
 to authenticated;
 
 -- دوال داخلية للبوابة لا تُستدعى مباشرة

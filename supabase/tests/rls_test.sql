@@ -489,9 +489,54 @@ select public.portal_reset_code(:'st1') ->> 'code' as pcode2 \gset
 reset role;
 set role anon;
 select t.ok((public.portal_me(:'ptoken') ->> 'code') = 'session', 'reset signs the student out');
-select t.ok((public.portal_login(:'plogin', :'pcode2') ->> 'ok')::boolean, 'reset clears the lock and gives a new code');
+select public.portal_login(:'plogin', :'pcode2') as plog2 \gset
+select t.ok((:'plog2'::jsonb ->> 'ok')::boolean, 'reset clears the lock and gives a new code');
+select :'plog2'::jsonb ->> 'token' as ptoken2 \gset
+-- حجب نتيجة طالب مؤقتاً: تختفي النتيجة ورمز التحقق من البوابة وصفحة التحقق، ويبقى السعي
+:as_admin
+select t.ok((public.portal_publish(jsonb_build_object('year_id', :'y', 'department_id', :'rad', 'stage', 2, 'shift', 'morning', 'term', 1, 'kind', 'results',
+             'snapshots', jsonb_build_array(jsonb_build_object('student_id', :'st1', 'data', jsonb_build_object('v', 1, 'status', 'pass'))))) ->> 'students')::int = 1,
+            'results published');
+select verify_code as vcode from public.students where id = :'st1' \gset
+:as_radhead
+select t.expect_error(format($$select public.set_result_withheld(%L, true, 'x')$$, :'st1'), '%الإدارة واللجنة%');
+update public.students set result_withheld = true, withheld_reason = 'تجاوز' where id = :'st1';
+select t.ok((select not result_withheld and withheld_reason is null from public.students where id = :'st1'), 'withholding cannot be set by a direct update');
+:as_t1
+select t.expect_error(format($$select public.set_result_withheld(%L, true, null)$$, :'st1'), '%الإدارة واللجنة%');
+reset role;
+set role anon;
+select t.ok((select jsonb_array_length(r -> 'items') = 2 and r ->> 'verify_code' = :'vcode' and not (r ->> 'withheld')::boolean
+             from jsonb_array_elements(public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records') r), 'before withholding: coursework + result + verify code');
+select t.ok((select jsonb_array_length(public.verify_result(:'vcode') -> 'subjects') > 0 and not (public.verify_result(:'vcode') ->> 'withheld')::boolean), 'verify page shows the result');
+:as_cmt
+select public.set_result_withheld(:'st1', true, '  يرجى مراجعة اللجنة الامتحانية  ');
+select t.ok((select result_withheld and withheld_reason = 'يرجى مراجعة اللجنة الامتحانية' and withheld_at is not null and withheld_by_name is not null
+             from public.students where id = :'st1'), 'committee withholds a result with a note');
+select t.ok((select w ->> 'student_id' = :'st1' and w ->> 'reason' is not null from jsonb_array_elements(public.portal_overview(:'y') -> 'withheld') w), 'overview lists withheld results');
+:as_radhead
+update public.students set notes = 'ملاحظة' where id = :'st1';
+select t.ok((select result_withheld and notes = 'ملاحظة' from public.students where id = :'st1'), 'other edits keep the withholding');
+reset role;
+set role anon;
+select t.ok((select jsonb_array_length(r -> 'items') = 1 and r -> 'items' -> 0 ->> 'kind' = 'coursework' and r ->> 'verify_code' is null
+                    and (r ->> 'withheld')::boolean and r ->> 'withheld_note' = 'يرجى مراجعة اللجنة الامتحانية'
+             from jsonb_array_elements(public.portal_me(:'ptoken2') -> 'data' -> 'records') r), 'withheld: result and verify code hidden, coursework stays');
+select t.ok((select (v ->> 'withheld')::boolean and jsonb_array_length(v -> 'subjects') = 0 and v -> 'student' ->> 'full_name' is not null
+             from public.verify_result(:'vcode') v), 'verify page reports a withheld result without grades');
+:as_cmt
+select public.set_result_withheld(:'st1', false);
+select t.ok((select not result_withheld and withheld_reason is null and withheld_at is null from public.students where id = :'st1'), 'withholding lifted');
+reset role;
+set role anon;
+select t.ok((select jsonb_array_length(r -> 'items') = 2 and r ->> 'verify_code' = :'vcode'
+             from jsonb_array_elements(public.portal_me(:'ptoken2') -> 'data' -> 'records') r), 'result is back immediately after lifting');
+reset role;
+select t.ok((select count(*) = 1 from public.audit_log where action = 'student.withhold') and (select count(*) = 1 from public.audit_log where action = 'student.unwithhold'),
+            'withholding audited');
 -- سحب النشر وإيقاف البوابة
 :as_admin
+select public.portal_unpublish(:'y', :'rad', 2::smallint, 'morning', 1::smallint, 'results');
 select public.portal_unpublish(:'y', :'rad', 2::smallint, 'morning', 1::smallint, 'coursework');
 select t.ok(jsonb_array_length(public.portal_overview(:'y') -> 'publications') = 0, 'unpublished');
 select public.portal_save_settings(false, 'https://portal.example/', null, 'رسالة');

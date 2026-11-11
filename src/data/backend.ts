@@ -112,6 +112,9 @@ export interface Backend {
   portalPublish(p: PortalPublishPayload): Promise<{ students: number }>
   portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void>
 
+  /** حجب نتيجة طالب مؤقتاً عن بوابة الطالب وصفحة التحقق، أو رفع الحجب (الإدارة واللجنة الامتحانية) */
+  setResultWithheld(studentId: string, withheld: boolean, reason?: string | null): Promise<void>
+
   /** التحقق العام من نتيجة طالب برمز QR (لا يتطلب تسجيل الدخول) — null إذا كان الرمز غير صحيح */
   verifyResult(code: string): Promise<VerifiedResult | null>
 
