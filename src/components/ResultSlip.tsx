@@ -148,13 +148,28 @@ export interface SlipProps {
   copy?: string
 }
 
+/**
+ * كثافة جدول النتيجة حسب عدد صفوفه (المواد + عناوين الفصول) لتبقى النتيجة كاملة داخل نصف الورقة.
+ * الحدود مقيسة على الإطار المطبوع: المتاح للجدول يسع نحو 12 صفاً واسعاً أو 15 متوسطاً أو 19 عادياً أو 23 مضغوطاً،
+ * وسطر المواد المكمل/الراسب فيها يأخذ مكان صف.
+ */
+export function slipDensity(rows: number, hasFailedLine = false): 'spacious' | 'roomy' | 'normal' | 'dense' | 'tight' {
+  const n = rows + (hasFailedLine ? 1 : 0)
+  return n > 22 ? 'tight' : n > 18 ? 'dense' : n > 14 ? 'normal' : n > 10 ? 'roomy' : 'spacious'
+}
+
+/** الحالات المحسومة التي تُختم نتيجتها بختم «معتمد من اللجنة الامتحانية» */
+const SEALED_STATUSES: ReadonlySet<string> = new Set(['pass', 'pass_r2', 'pass_carry', 'carry', 'fail'])
+
 /** نتيجة الامتحانات النهائية لطالب واحد — نصف ورقة A4 أفقية */
 export function ResultSlip({ student, dept, yearLabel, settings, report, scope, copy }: SlipProps) {
   const m = slipModel(student, report, scope)
   const rowsCount = m.sections.reduce((a, s) => a + s.rows.length + (m.sections.length > 1 ? 1 : 0), 0)
   // كثافة الجدول حسب عدد المواد لتملأ النتيجة نصف الورقة دون ازدحام أو فراغ كبير
-  const density = rowsCount > 21 ? 'dense' : rowsCount > 17 ? 'normal' : rowsCount > 10 ? 'roomy' : 'spacious'
+  const density = slipDensity(rowsCount, m.failed.length > 0)
   const statusClass = m.status === 'pass' || m.status === 'pass_r2' ? 'is-pass' : m.status === 'pass_carry' ? 'is-carry' : m.status === 'carry' ? 'is-carry' : m.status === 'fail' ? 'is-fail' : 'is-muted'
+  // الختم الإلكتروني يُطبع على النتيجة المحسومة فقط؛ غير المكتملة يبقى فيها مكان الختم فارغاً
+  const sealed = SEALED_STATUSES.has(m.status)
   let n = 0
   return (
     <article className={`slip slip-${density}`} data-result-slip>
@@ -283,9 +298,13 @@ export function ResultSlip({ student, dept, yearLabel, settings, report, scope, 
         )}
 
         <footer className="slip-foot">
-          <div className="slip-stamp">
-            <span>الختم الرسمي</span>
-          </div>
+          {sealed ? (
+            <img src="./seal.png" alt="ختم: معتمد من اللجنة الامتحانية" className="slip-seal" />
+          ) : (
+            <div className="slip-stamp">
+              <span>الختم الرسمي</span>
+            </div>
+          )}
           <div className="slip-signs">
             <Sign title="رئيس القسم" name={dept?.head_name} />
             <Sign title="رئيس اللجنة الامتحانية" name={settings.committee_head_name} />

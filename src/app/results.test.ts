@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCode, slipModel } from '../components/ResultSlip'
+import { formatCode, slipDensity, slipModel } from '../components/ResultSlip'
 import type { Grade, Settings, Student, Subject, VerifiedResult, VerifiedSubject } from '../lib/types'
 import { buildStudentReport, buildVerifiedReport, officialGrade, rowFromVerified } from './results'
 
@@ -195,5 +195,13 @@ describe('public verification', () => {
   it('uses the approved second round as the final result', () => {
     const row = rowFromVerified(vs('ب', 1, { total: 40, passed: false, r2_approved: true, r2_total: 58, r2_passed: true }), settings)
     expect(row).toMatchObject({ finalRound: 2, finalTotal: 58, finalPassed: true, finalLabel: 'مقبول' })
+  })
+
+  it('slipDensity: كثافة أضيق كلما زادت الصفوف، وسطر المواد المكمل فيها يُحسب صفاً', () => {
+    expect([8, 10, 11, 14, 15, 18, 19, 22, 23, 26].map((n) => slipDensity(n))).toEqual([
+      'spacious', 'spacious', 'roomy', 'roomy', 'normal', 'normal', 'dense', 'dense', 'tight', 'tight',
+    ])
+    expect(slipDensity(14, true)).toBe('normal')
+    expect(slipDensity(10, true)).toBe('roomy')
   })
 })
