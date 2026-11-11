@@ -586,6 +586,12 @@ select t.ok((select jsonb_array_length(public.portal_login(:'plogin', :'pcode2')
 select public.add_students(:'y', :'rad', 2::smallint, 'morning', array['عبد الله سالم حمد', 'ساره محمود علي']);
 select public.add_students(:'y0', :'rad', 1::smallint, 'morning', array['عبدالله سالم حمد', 'سارة محمود علي الدليمي']);
 select public.portal_generate_accounts(:'y', :'rad', 2::smallint, 'morning');
+-- طالب في المرحلة الرابعة: النظام فيه سنتان أسبق فقط لهذا القسم، فلا يُعدّ ناقصاً إذا ظهرت له السنتان
+select public.add_students(:'y', :'rad', 4::smallint, 'morning', array['طالب رابع قديم']);
+select public.add_students(:'y0', :'rad', 3::smallint, 'morning', array['طالب رابع قديم']);
+select public.add_students(:'y00', :'rad', 2::smallint, 'morning', array['طالب رابع قديم']);
+select t.ok((public.portal_generate_accounts(:'y', :'rad', 4::smallint, 'morning') ->> 'history')::int = 2, 'fourth-stage student gets both earlier years');
+select id as old4 from public.students where year_id = :'y' and full_name = 'طالب رابع قديم' \gset
 reset role;
 insert into public.portal_accounts (login_id, code_hash) values ('8000001', 'x') returning id as dup_acc \gset
 update public.students set portal_account_id = :'dup_acc' where year_id = :'y0' and full_name = 'عبدالله سالم حمد';
@@ -610,8 +616,10 @@ select public.portal_history_report(:'y') as rep \gset
 select t.ok((select m -> 'candidates' -> 0 ->> 'student_id' = :'sara0' and not (m -> 'candidates' -> 0 ->> 'exact')::boolean and (m ->> 'have')::int = 0
              from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' = :'sara'),
             'report: student missing an earlier year, with the similar record as a candidate');
-select t.ok((select count(*) = 0 from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' in (:'st1', :'abd')),
-            'report: students with all earlier years are not listed');
+select t.ok((select count(*) = 0 from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' in (:'st1', :'abd', :'old4')),
+            'report: students with all the earlier years the system holds are not listed');
+select t.ok((select (m ->> 'expected')::int = 1 from jsonb_array_elements(:'rep'::jsonb -> 'missing') m where m ->> 'student_id' = :'sara'),
+            'report: expected earlier years = stage - 1, capped by the years on record');
 select t.ok((select count(*) >= 1 from jsonb_array_elements(:'rep'::jsonb -> 'unpublished') u where u ->> 'year' = '2025-2026' and (u ->> 'stage')::int = 1),
             'report: earlier-year classes whose results are not published');
 select t.expect_error(format($$select public.portal_link_pair(%L, %L)$$, :'sara', :'abd'), '%السنة الدراسية نفسها%');
@@ -622,8 +630,8 @@ reset role;
 set role anon;
 select t.expect_error(format($$select public.portal_history_report(%L)$$, :'y'), '%permission denied%');
 :as_admin
-delete from public.students where year_id = :'y' and full_name in ('عبد الله سالم حمد', 'ساره محمود علي');
-delete from public.students where year_id = :'y0' and full_name in ('عبدالله سالم حمد', 'سارة محمود علي الدليمي');
+delete from public.students where year_id = :'y' and full_name in ('عبد الله سالم حمد', 'ساره محمود علي', 'طالب رابع قديم');
+delete from public.students where year_id = :'y0' and full_name in ('عبدالله سالم حمد', 'سارة محمود علي الدليمي', 'طالب رابع قديم');
 -- إنشاء الحسابات في سنة يربط سجلات السنوات الأخرى للحسابات الجديدة أيضاً
 :as_admin
 select public.add_students(:'y0', :'rad', 2::smallint, 'morning', array['طالب جديد تماماً']);

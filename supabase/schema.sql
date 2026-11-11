@@ -1529,7 +1529,8 @@ begin
 end $$;
 
 -- فحص اكتمال سجلات الطلبة في بوابة الطالب للسنة المختارة:
---   missing: طلبة (مرحلة ثانية فما فوق) سجلاتهم الأسبق المربوطة بحسابهم أقل من المتوقع، مع سجلات مرشحة للربط اليدوي
+--   missing: طلبة (مرحلة ثانية فما فوق) سجلاتهم الأسبق المربوطة بحسابهم أقل من المتوقع (المرحلة − 1، ولا يتجاوز عدد
+--            السنوات الأسبق التي للقسم فيها طلبة في النظام)، مع سجلات مرشحة للربط اليدوي
 --            (القسم نفسه، سنة أسبق، الاسمان الأولان متطابقان) — الربط التلقائي لا يطابق إلا الاسم الكامل أو الرقم الجامعي.
 --   unpublished: صفوف في سنوات أسبق فيها سجلات لطلبة حاليين ولم تُنشر نتائجها بعد.
 create or replace function public.portal_history_report(p_year_id uuid, p_department_id uuid default null) returns jsonb
@@ -1560,10 +1561,18 @@ begin
       join public.students e on e.portal_account_id = c.acc and e.id <> c.id
       join public.academic_years y on y.id = e.year_id
       where y.label < v_label),
+    -- السنوات الأسبق التي للقسم فيها طلبة مسجلون في النظام: لا يُتوقع سجل في سنة لم تُدخل بياناتها أصلاً
+    dy as materialized (
+      select e.department_id, count(distinct e.year_id)::int as n
+      from public.students e join public.academic_years y on y.id = e.year_id
+      where y.label < v_label and (v_dept is null or e.department_id = v_dept)
+      group by e.department_id),
     lack as materialized (
-      select c.*, (select count(*) from prev p where p.cur_id = c.id)::int as have
-      from cur c
-      where (select count(*) from prev p where p.cur_id = c.id) < c.stage - 1),
+      select x.* from (
+        select c.*, (select count(*) from prev p where p.cur_id = c.id)::int as have,
+               least(c.stage - 1, coalesce((select d.n from dy d where d.department_id = c.department_id), 0))::int as expected
+        from cur c) x
+      where x.have < x.expected),
     pool as materialized (
       select e.id, e.full_name, e.department_id, e.stage, e.shift, e.year_id, e.portal_account_id as acc, e.student_no,
              y.label, public.name_words(e.full_name) as w
@@ -1586,7 +1595,7 @@ begin
       'missing', coalesce((
         select jsonb_agg(jsonb_build_object(
                  'student_id', l.id, 'full_name', l.full_name, 'department_id', l.department_id, 'stage', l.stage, 'shift', l.shift,
-                 'have', l.have,
+                 'have', l.have, 'expected', l.expected,
                  'candidates', coalesce((select jsonb_agg(jsonb_build_object('student_id', c.student_id, 'full_name', c.full_name,
                                                    'year', c.year, 'stage', c.stage, 'shift', c.shift,
                                                    'other_account', c.other_account, 'exact', c.exact) order by c.rn)

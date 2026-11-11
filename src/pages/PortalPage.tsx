@@ -589,7 +589,7 @@ function HistoryCheck({ yearId, dept, onChanged }: { yearId: string; dept: strin
                       </td>
                       <td className="text-sm text-muted">{cls(m)}</td>
                       <td className="text-center tabular-nums">
-                        {m.have} من {m.stage - 1}
+                        {m.have} من {m.expected ?? m.stage - 1}
                       </td>
                       <td>
                         {m.candidates.length === 0 ? (
