@@ -277,10 +277,19 @@ async function main() {
   await page.locator('table a[href*="/student/"]').first().click()
   await page.waitForSelector('.slip-preview [data-result-slip]:has-text("نتيجة الامتحانات النهائية")')
   const slipText = await page.locator('.slip-preview [data-result-slip]').first().innerText()
-  for (const t of ['رئيس القسم', 'رئيس اللجنة الامتحانية', 'عميد الكلية', 'الختم الرسمي', 'رمز التحقق']) assert(slipText.includes(t), `result slip shows ${t}`)
+  for (const t of ['رئيس القسم', 'رئيس اللجنة الامتحانية', 'عميد الكلية', 'رمز التحقق']) assert(slipText.includes(t), `result slip shows ${t}`)
+  // الختم الإلكتروني على النتيجة المحسومة فقط، وإلا يبقى مكان الختم فارغاً
+  const slips = page.locator('.slip-preview [data-result-slip]')
+  for (let i = 0; i < (await slips.count()); i++) {
+    const one = slips.nth(i)
+    const settled = /حالة الطالب\s*(ناجح|مكمل|راسب)/.test(await one.innerText())
+    assert((await one.locator('img.slip-seal').count()) === (settled ? 1 : 0), 'committee seal printed on settled results only')
+    assert((await one.locator('.slip-stamp').count()) === (settled ? 0 : 1), 'empty stamp place kept for unsettled results')
+  }
+  assert(await page.locator('.slip-preview img.slip-seal').first().evaluate((el) => el.complete && el.naturalWidth > 0), 'seal image loads')
   assert((await page.locator('.slip-preview [data-result-slip] svg[aria-label="رمز التحقق من النتيجة"]').count()) === 2, 'two copies with a QR code each')
   await shot('11-student')
-  log('student page: all subjects + official result (A4 landscape, two copies, signatures, stamp, QR)')
+  log('student page: all subjects + official result (A4 landscape, two copies, signatures, committee seal, QR)')
 
   // ===== النتائج: قسم + مرحلة + فصل، نتيجتان في كل صفحة =====
   await page.click('aside a:has-text("النتائج")')
@@ -297,6 +306,9 @@ async function main() {
   await page.emulateMedia({ media: 'screen' })
   await page.click('button[role="tab"]:has-text("الفصلان معاً")')
   await page.waitForSelector('.slip-preview .slip-group:has-text("الفصل الثاني")')
+  // النتيجة السنوية (أكثر المواد) تبقى داخل إطارها مع الختم دون اقتطاع
+  const clipped = await page.locator('.slip-preview .slip-frame').evaluateAll((els) => els.filter((el) => el.scrollHeight > el.clientHeight + 1).length)
+  assert(clipped === 0, 'annual result with the seal fits its half page')
   await page.click('button[role="tab"]:has-text("الفصل الأول")')
   await page.click('button[role="tab"]:has-text("مكمل")')
   await page.emulateMedia({ media: 'print' })

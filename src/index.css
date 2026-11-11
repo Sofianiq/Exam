@@ -496,6 +496,18 @@
   padding-block: 0.45mm;
   font-size: 6.9pt;
 }
+/* أقصى ضغط للنتيجة السنوية الطويلة (أكثر من 22 صفاً) */
+.slip-tight .slip-table td {
+  padding-block: 0.2mm;
+  font-size: 6.3pt;
+  line-height: 1.3;
+}
+.slip-tight .slip-table td.long {
+  font-size: 5.7pt;
+}
+.slip-tight .slip-table .slip-group td {
+  padding-block: 0.35mm;
+}
 .slip-dense .slip-table td.long {
   font-size: 6.1pt;
 }
@@ -569,13 +581,14 @@
 }
 .slip-foot {
   display: grid;
-  grid-template-columns: 17mm 1fr 17mm;
+  grid-template-columns: 20.5mm 1fr 17mm;
   align-items: end;
   gap: 3mm;
   margin-top: auto;
   padding-top: 2.4mm;
 }
 .slip-stamp {
+  margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -586,6 +599,14 @@
   color: var(--s-gold);
   font-size: 6pt;
   text-align: center;
+}
+/* الختم الإلكتروني للجنة الامتحانية (مائل قليلاً كالختم الحقيقي) */
+.slip-seal {
+  display: block;
+  width: 20.5mm;
+  height: 20.5mm;
+  transform: rotate(-9deg);
+  opacity: 0.94;
 }
 .slip-signs {
   display: grid;
