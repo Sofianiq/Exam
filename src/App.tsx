@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import { Layout } from './app/Layout'
+import { pages } from './app/preload'
 import { SessionProvider } from './app/session'
 import { FeedbackProvider } from './components/feedback'
 import { RouteError, clearChunkReloadFlag } from './components/RouteError'
@@ -19,20 +20,20 @@ import { NotFoundPage } from './pages/NotFoundPage'
 import { ReviewPage } from './pages/ReviewPage'
 
 // الصفحات الأقل استخداماً تُحمَّل عند فتحها أول مرة فقط (تصغير حجم التحميل الأول وتسريع فتح التطبيق)
-const AnnouncementsPage = lazy(() => import('./pages/AnnouncementsPage').then((m) => ({ default: m.AnnouncementsPage })))
-const AuditPage = lazy(() => import('./pages/AuditPage').then((m) => ({ default: m.AuditPage })))
-const ControlPage = lazy(() => import('./pages/ControlPage').then((m) => ({ default: m.ControlPage })))
-const CurriculumPage = lazy(() => import('./pages/CurriculumPage').then((m) => ({ default: m.CurriculumPage })))
-const ProgressPage = lazy(() => import('./pages/ProgressPage').then((m) => ({ default: m.ProgressPage })))
-const ResultsBatchPage = lazy(() => import('./pages/ResultsBatchPage').then((m) => ({ default: m.ResultsBatchPage })))
-const ResultsPage = lazy(() => import('./pages/ResultsPage').then((m) => ({ default: m.ResultsPage })))
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
-const StudentPage = lazy(() => import('./pages/StudentPage').then((m) => ({ default: m.StudentPage })))
-const StudentsSearchPage = lazy(() => import('./pages/StudentsSearchPage').then((m) => ({ default: m.StudentsSearchPage })))
-const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })))
-const StatisticsPage = lazy(() => import('./pages/StatisticsPage').then((m) => ({ default: m.StatisticsPage })))
-const PortalPage = lazy(() => import('./pages/PortalPage').then((m) => ({ default: m.PortalPage })))
-const VerifyPage = lazy(() => import('./pages/VerifyPage').then((m) => ({ default: m.VerifyPage })))
+const AnnouncementsPage = lazy(() => pages.announcements().then((m) => ({ default: m.AnnouncementsPage })))
+const AuditPage = lazy(() => pages.audit().then((m) => ({ default: m.AuditPage })))
+const ControlPage = lazy(() => pages.control().then((m) => ({ default: m.ControlPage })))
+const CurriculumPage = lazy(() => pages.curriculum().then((m) => ({ default: m.CurriculumPage })))
+const ProgressPage = lazy(() => pages.progress().then((m) => ({ default: m.ProgressPage })))
+const ResultsBatchPage = lazy(() => pages.resultsBatch().then((m) => ({ default: m.ResultsBatchPage })))
+const ResultsPage = lazy(() => pages.results().then((m) => ({ default: m.ResultsPage })))
+const SettingsPage = lazy(() => pages.settings().then((m) => ({ default: m.SettingsPage })))
+const StudentPage = lazy(() => pages.student().then((m) => ({ default: m.StudentPage })))
+const StudentsSearchPage = lazy(() => pages.studentsSearch().then((m) => ({ default: m.StudentsSearchPage })))
+const UsersPage = lazy(() => pages.users().then((m) => ({ default: m.UsersPage })))
+const StatisticsPage = lazy(() => pages.statistics().then((m) => ({ default: m.StatisticsPage })))
+const PortalPage = lazy(() => pages.portal().then((m) => ({ default: m.PortalPage })))
+const VerifyPage = lazy(() => pages.verify().then((m) => ({ default: m.VerifyPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {

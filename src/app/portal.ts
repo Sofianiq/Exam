@@ -104,3 +104,16 @@ export function portalLoginUrl(portalUrl: string | null | undefined, loginId: st
   const base = portalUrl.trim().replace(/#.*$/, '')
   return `${base}${base.endsWith('/') ? '' : '/'}#/login?u=${encodeURIComponent(loginId)}${code ? `&c=${encodeURIComponent(code)}` : ''}`
 }
+
+/** آخر تغيير في درجات الفصل (أو الفصلين للنتيجة السنوية) كما يعيده ملخص البوابة */
+export function changedAtOf(term: PortalTerm, changes: PortalChange[]): string | null {
+  const terms = term === 0 ? [1, 2] : [term]
+  return changes.filter((c) => terms.includes(c.term)).reduce<string | null>((m, c) => (c.changed_at && (!m || c.changed_at > m) ? c.changed_at : m), null)
+}
+
+/** هل تغيّرت الدرجات بعد آخر نشر؟ (يحتاج الطلبة إلى «تحديث النشر» ليروا الجديد) */
+export function isStalePublication(pub: { term: PortalTerm; published_at: string } | undefined, changes: PortalChange[]): boolean {
+  if (!pub) return false
+  const at = changedAtOf(pub.term, changes)
+  return !!at && at > pub.published_at
+}
