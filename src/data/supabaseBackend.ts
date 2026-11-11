@@ -480,7 +480,7 @@ export class SupabaseBackend implements Backend {
   }
 
   async portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }) {
-    return this.rpc<{ created: number; linked: number }>('portal_generate_accounts', {
+    return this.rpc<{ created: number; linked: number; history?: number }>('portal_generate_accounts', {
       p_year_id: k.year_id,
       p_department_id: k.department_id,
       p_stage: k.stage ?? null,
@@ -502,6 +502,10 @@ export class SupabaseBackend implements Backend {
 
   async portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void> {
     await this.rpc('portal_unpublish', { p_year_id: k.year_id, p_department_id: k.department_id, p_stage: k.stage, p_shift: k.shift, p_term: term, p_kind: kind })
+  }
+
+  async portalLinkHistory(departmentId?: string | null): Promise<{ linked: number }> {
+    return this.rpc<{ linked: number }>('portal_link_history', { p_department_id: departmentId || null })
   }
 
   async setResultWithheld(studentId: string, withheld: boolean, reason?: string | null): Promise<void> {

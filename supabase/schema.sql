@@ -1368,6 +1368,111 @@ begin
     case when coalesce(p_enabled, true) then 'تحديث إعدادات بوابة الطالب' else 'إيقاف بوابة الطالب مؤقتاً' end, null);
 end $$;
 
+-- مفتاح مطابقة الأسماء: يتجاهل التشكيل والتطويل واختلاف الهمزات والتاء المربوطة والألف المقصورة والمسافات
+-- (المعيار نفسه الذي تكشف به الواجهة الأسماء المكررة عند لصق الطلبة)
+create or replace function public.name_key(p text) returns text
+language sql immutable set search_path = '' as $$
+  select btrim(regexp_replace(
+           translate(regexp_replace(coalesce(p, ''), '[ً-ٰٟـ]', '', 'g'), 'أإآٱىةؤئ', 'اااايهوي'),
+           '\s+', ' ', 'g'))
+$$;
+
+-- ربط سجلات الطالب في كل السنوات بحسابه في بوابة الطالب ليرى كل مراحله ونتائجه بحساب واحد،
+-- أياً كانت السنة التي أُنشئت فيها الحسابات. يُربط السجل غير المربوط بحساب موجود في حالتين فقط:
+--   1) الرقم الجامعي نفسه (في أي قسم).
+--   2) الاسم نفسه (بعد التطبيع) في القسم نفسه في سنة أخرى، بشروط تمنع الالتباس: حساب مرشح واحد، ولا يوجد
+--      في سنة السجل طالب آخر غير مربوط بالاسم نفسه، ولا يتعارض الرقمان الجامعيان، وتسلسل المراحل معقول
+--      (لا يتقدم الطالب أكثر من مرحلة في السنة ولا يتراجع).
+-- ولا يُربط للحساب أكثر من سجل في السنة الواحدة. تُعيد عدد السجلات التي رُبطت.
+create or replace function public.portal_link_records(p_department_id uuid default null) returns int
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_total int := 0;
+  v_a int;
+  v_b int;
+begin
+  perform pg_advisory_xact_lock(hashtext('portal-accounts'));
+  for i in 1..4 loop
+    -- (1) بالرقم الجامعي
+    with known as (
+      select x.sn, (array_agg(x.acc))[1] as acc
+      from (select l.student_no as sn, l.portal_account_id as acc from public.students l
+            where l.portal_account_id is not null and l.student_no is not null
+            union
+            select a.student_no, a.id from public.portal_accounts a where a.student_no is not null) x
+      group by x.sn having count(distinct x.acc) = 1),
+    pick as (
+      select distinct on (k.acc, s.year_id) s.id, k.acc
+      from public.students s join known k on k.sn = s.student_no
+      where s.portal_account_id is null
+        and (p_department_id is null or s.department_id = p_department_id)
+        and not exists (select 1 from public.students c where c.portal_account_id = k.acc and c.year_id = s.year_id)
+      order by k.acc, s.year_id, s.stage desc, s.id)
+    update public.students s set portal_account_id = p.acc from pick p where s.id = p.id;
+    get diagnostics v_a = row_count;
+
+    -- (2) بالاسم في القسم نفسه
+    with u as materialized (
+      select s.id, s.year_id, s.department_id, s.stage, s.student_no, public.name_key(s.full_name) as k,
+             substring(y.label from '^\d{4}')::int as yr
+      from public.students s join public.academic_years y on y.id = s.year_id
+      where s.portal_account_id is null and (p_department_id is null or s.department_id = p_department_id)),
+    l as materialized (
+      select s.portal_account_id as acc, s.year_id, s.department_id, s.stage, s.student_no, public.name_key(s.full_name) as k,
+             substring(y.label from '^\d{4}')::int as yr
+      from public.students s join public.academic_years y on y.id = s.year_id
+      where s.portal_account_id is not null and (p_department_id is null or s.department_id = p_department_id)),
+    amb as (select u.year_id, u.department_id, u.k from u group by 1, 2, 3 having count(*) > 1),
+    cand as (
+      select u.id, u.year_id, l.acc
+      from u join l on l.department_id = u.department_id and l.k = u.k and l.year_id <> u.year_id
+      where u.k <> ''
+        and not exists (select 1 from amb a where a.year_id = u.year_id and a.department_id = u.department_id and a.k = u.k)
+      group by u.id, u.year_id, l.acc
+      having bool_and((u.student_no is null or l.student_no is null or u.student_no = l.student_no)
+                      and (u.yr is null or l.yr is null
+                           or (l.stage - u.stage) between least(0, l.yr - u.yr) and greatest(0, l.yr - u.yr)))),
+    one as (select c.id, c.year_id, (array_agg(c.acc))[1] as acc from cand c group by c.id, c.year_id having count(*) = 1),
+    pick as (
+      select o.id, o.acc from one o
+      where not exists (select 1 from public.students c where c.portal_account_id = o.acc and c.year_id = o.year_id)
+        and (select count(*) from one o2 where o2.acc = o.acc and o2.year_id = o.year_id) = 1)
+    update public.students s set portal_account_id = p.acc from pick p where s.id = p.id;
+    get diagnostics v_b = row_count;
+
+    v_total := v_total + v_a + v_b;
+    exit when v_a + v_b = 0;
+  end loop;
+  -- يُثبَّت الرقم الجامعي على الحساب متى عُرف من أحد سجلاته (يقوّي الربط في السنوات القادمة)
+  update public.portal_accounts a set student_no = x.sn
+  from (select s.portal_account_id as acc, min(s.student_no) as sn
+        from public.students s where s.portal_account_id is not null and s.student_no is not null
+        group by s.portal_account_id having count(distinct s.student_no) = 1) x
+  where a.id = x.acc and a.student_no is null
+    and not exists (select 1 from public.portal_accounts b where b.student_no = x.sn);
+  return v_total;
+end $$;
+
+-- ربط سجلات السنوات الأخرى يدوياً من صفحة «بوابة الطلبة» (لقسم واحد، أو لكل الأقسام لمن يدير البوابة)
+create or replace function public.portal_link_history(p_department_id uuid default null) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare v_n int;
+begin
+  if p_department_id is null then
+    if not public.portal_can_manage() then
+      raise exception 'ربط سجلات كل الأقسام من صلاحية مدير النظام أو العميد فقط' using errcode = '42501';
+    end if;
+  elsif not public.portal_can_cards(p_department_id) then
+    raise exception 'ليست لديك صلاحية إدارة حسابات طلبة هذا القسم' using errcode = '42501';
+  end if;
+  v_n := public.portal_link_records(p_department_id);
+  if v_n > 0 then
+    perform public.write_audit('portal.accounts', 'portal', null, p_department_id,
+      'ربط سجلات سنوات أخرى بحسابات بوابة الطالب: ' || v_n || ' سجل', jsonb_build_object('history', v_n));
+  end if;
+  return jsonb_build_object('linked', v_n);
+end $$;
+
 -- توليد حسابات الدخول لطلبة صف (أو قسم كامل). الطالب الذي له حساب من سنة سابقة (بالرقم الجامعي،
 -- أو بالاسم نفسه في القسم نفسه دون التباس) يحتفظ بحسابه ورمزه، فيرى سجله في كل السنوات.
 create or replace function public.portal_generate_accounts(p_year_id uuid, p_department_id uuid, p_stage smallint default null, p_shift text default null)
@@ -1381,11 +1486,22 @@ declare
   v_code text;
   v_created int := 0;
   v_linked int := 0;
+  v_history int := 0;
+  v_before int;
 begin
   if not public.portal_can_cards(p_department_id) then
     raise exception 'ليست لديك صلاحية إنشاء حسابات الطلبة لهذا القسم' using errcode = '42501';
   end if;
   perform pg_advisory_xact_lock(hashtext('portal-accounts'));
+  -- أولاً: من له حساب من سنة أخرى يُربط به (بالرقم الجامعي أو الاسم) فلا يُنشأ له حساب ثانٍ
+  select count(*) into v_before from public.students s
+   where s.year_id = p_year_id and s.department_id = p_department_id and s.status = 'active' and s.portal_account_id is null
+     and (p_stage is null or s.stage = p_stage) and (p_shift is null or s.shift = p_shift);
+  v_history := public.portal_link_records(p_department_id);
+  select v_before - count(*) into v_linked from public.students s
+   where s.year_id = p_year_id and s.department_id = p_department_id and s.status = 'active' and s.portal_account_id is null
+     and (p_stage is null or s.stage = p_stage) and (p_shift is null or s.shift = p_shift);
+  v_history := v_history - v_linked;
   for st in
     select * from public.students s
     where s.year_id = p_year_id and s.department_id = p_department_id and s.status = 'active'
@@ -1423,12 +1539,17 @@ begin
     end if;
     update public.students set portal_account_id = v_acc where id = st.id;
   end loop;
-  if v_created + v_linked > 0 then
-    perform public.write_audit('portal.accounts', 'portal', null, p_department_id,
-      'إنشاء حسابات بوابة الطالب: ' || v_created || ' حساب جديد' || case when v_linked > 0 then '، ' || v_linked || ' حساب سابق' else '' end,
-      jsonb_build_object('year_id', p_year_id, 'stage', p_stage, 'shift', p_shift, 'created', v_created, 'linked', v_linked));
+  -- أخيراً: سجلات الطلبة أنفسهم في السنوات الأخرى تُربط بالحسابات الجديدة ليروا كل مراحلهم
+  if v_created > 0 then
+    v_history := v_history + public.portal_link_records(p_department_id);
   end if;
-  return jsonb_build_object('created', v_created, 'linked', v_linked);
+  if v_created + v_linked + v_history > 0 then
+    perform public.write_audit('portal.accounts', 'portal', null, p_department_id,
+      'إنشاء حسابات بوابة الطالب: ' || v_created || ' حساب جديد' || case when v_linked > 0 then '، ' || v_linked || ' حساب سابق' else '' end
+        || case when v_history > 0 then '، وربط ' || v_history || ' سجل من سنوات أخرى' else '' end,
+      jsonb_build_object('year_id', p_year_id, 'stage', p_stage, 'shift', p_shift, 'created', v_created, 'linked', v_linked, 'history', v_history));
+  end if;
+  return jsonb_build_object('created', v_created, 'linked', v_linked, 'history', v_history);
 end $$;
 
 -- بيانات بطاقات الدخول لصف (الرمز يظهر ما دام الطالب لم يغيّره)
@@ -2200,11 +2321,13 @@ grant execute on function
   public.portal_generate_accounts(uuid, uuid, smallint, text), public.portal_cards(uuid, uuid, smallint, text),
   public.portal_reset_code(uuid), public.portal_publish(jsonb),
   public.portal_unpublish(uuid, uuid, smallint, text, smallint, text),
-  public.set_result_withheld(uuid, boolean, text)
+  public.set_result_withheld(uuid, boolean, text),
+  public.portal_link_history(uuid)
 to authenticated;
 
 -- دوال داخلية للبوابة لا تُستدعى مباشرة
-revoke execute on function public.portal_payload(uuid), public.portal_session_account(text), public.portal_random_digits(int)
+revoke execute on function public.portal_payload(uuid), public.portal_session_account(text), public.portal_random_digits(int),
+  public.portal_link_records(uuid)
   from public, anon, authenticated;
 -- واجهة الطالب: متاحة دون حساب في نظام اللجنة (التحقق برقم الدخول والرمز ثم برمز الجلسة)
 grant execute on function public.portal_login(text, text), public.portal_me(text),
@@ -2486,6 +2609,10 @@ on conflict (department_id, stage, term, name) do nothing;
 insert into public.settings (id, current_year_id)
 values (1, (select id from public.academic_years where label = '2026-2027'))
 on conflict (id) do nothing;
+
+-- بوابة الطالب: ربط سجلات الطلبة في السنوات الأخرى بحساباتهم الموجودة ليروا كل مراحلهم (آمن عند إعادة التشغيل،
+-- ولا أثر له إن لم تُنشأ حسابات بعد). يظهر العدد في نتيجة التشغيل.
+select public.portal_link_records(null) as "سجلات رُبطت بحسابات الطلبة";
 
 -- ---------------------------------------------------------------------
 -- 12) أول حساب مدير نظام

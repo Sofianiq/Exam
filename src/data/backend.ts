@@ -106,7 +106,9 @@ export interface Backend {
   portalOverview(yearId: string): Promise<PortalOverview>
   portalSaveSettings(s: Pick<PortalSettings, 'enabled' | 'portal_url' | 'notice'> & { exam_url?: string | null }): Promise<void>
   /** ينشئ حسابات الدخول لطلبة صف (أو قسم كامل عند إغفال المرحلة والدراسة) */
-  portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }): Promise<{ created: number; linked: number }>
+  portalGenerateAccounts(k: { year_id: string; department_id: string; stage?: number; shift?: ClassKey['shift'] }): Promise<{ created: number; linked: number; history?: number }>
+  /** يربط سجلات الطلبة في السنوات الأخرى بحساباتهم ليروا كل مراحلهم (لقسم واحد، أو لكل الأقسام عند إغفاله) */
+  portalLinkHistory(departmentId?: string | null): Promise<{ linked: number }>
   portalCards(k: ClassKey): Promise<PortalCard[]>
   portalResetCode(studentId: string): Promise<{ login_id: string; code: string }>
   portalPublish(p: PortalPublishPayload): Promise<{ students: number }>

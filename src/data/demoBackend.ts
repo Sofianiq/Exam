@@ -494,6 +494,14 @@ export class DemoBackend implements Backend {
     return { created, linked: 0 }
   }
 
+  /** في الوضع التجريبي لكل سجل حساب مستقل (لا ربط بين السنوات)، فلا شيء يُربط */
+  async portalLinkHistory(departmentId?: string | null): Promise<{ linked: number }> {
+    await wait(20)
+    const me = this.me()
+    if (departmentId ? !this.portalCardsAllowed(me, departmentId) : !this.portalManage(me)) fail('ليست لديك صلاحية إدارة حسابات الطلبة')
+    return { linked: 0 }
+  }
+
   async portalCards(k: ClassKey): Promise<PortalCard[]> {
     await wait(20)
     if (!this.portalCardsAllowed(this.me(), k.department_id)) fail('ليست لديك صلاحية عرض بطاقات هذا القسم')
