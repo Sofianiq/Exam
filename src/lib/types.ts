@@ -419,6 +419,8 @@ export interface PortalHistoryReport {
     shift: Shift
     /** عدد سجلاته المربوطة في سنوات أسبق */
     have: number
+    /** العدد المتوقع: المرحلة − 1، ولا يتجاوز السنوات الأسبق الموجودة في النظام للقسم */
+    expected?: number
     candidates: { student_id: string; full_name: string; year: string; stage: number; shift: Shift; other_account: boolean; exact: boolean }[]
   }[]
   /** صفوف في سنوات أسبق فيها سجلات لطلبة حاليين ولم تُنشر نتائجها */
