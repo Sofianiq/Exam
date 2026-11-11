@@ -547,15 +547,49 @@ select t.ok((public.portal_login(:'plogin', :'pcode2') ->> 'code') = 'closed', '
 select public.portal_save_settings(true, 'https://portal.example/', null, null);
 select t.ok((select exam_url = 'https://exam.example/' and portal_url = 'https://portal.example/' from jsonb_to_record(public.portal_overview(:'y') -> 'settings') as x(exam_url text, portal_url text)),
             'settings kept');
--- الطالب نفسه في سنة لاحقة يحتفظ بحسابه (بالاسم في القسم نفسه)
-insert into public.academic_years (label) values ('2027-2028') returning id as y2 \gset
-select public.add_students(:'y2', :'rad', 3::smallint, 'morning', array['احمد كريم جواد', 'طالب جديد تماماً']);
-select t.ok((select r ->> 'created' = '1' and r ->> 'linked' = '1' from public.portal_generate_accounts(:'y2', :'rad') r), 'returning student keeps the same account');
+-- سجلات الطالب في السنوات السابقة تُربط بحسابه ليرى كل مراحله (دون إنشاء حسابات في تلك السنوات)
+insert into public.academic_years (label) values ('2025-2026') on conflict (label) do update set label = excluded.label returning id as y0 \gset
+insert into public.academic_years (label) values ('2024-2025') returning id as y00 \gset
+select public.add_students(:'y0', :'rad', 1::smallint, 'morning', array['أحمد كريم جواد']);   -- الاسم نفسه باختلاف الهمزة، مرحلة معقولة
+select public.add_students(:'y00', :'rad', 4::smallint, 'morning', array['احمد كريم جواد']);  -- الاسم نفسه لكن مرحلة غير معقولة (شخص آخر)
+select public.add_students(:'y00', :'ans', 1::smallint, 'morning', array['احمد جواد']);       -- اسم وقسم مختلفان والرقم الجامعي نفسه
+update public.students set student_no = 'S-100' where year_id = :'y0' and department_id = :'rad';
+update public.students set student_no = 'S-100' where year_id = :'y00' and department_id = :'ans';
+:as_radhead
+select t.expect_error($$select public.portal_link_history(null)$$, '%مدير النظام أو العميد%');
+select t.expect_error(format($$select public.portal_link_history(%L)$$, :'ans'), '%صلاحية%');
 reset role;
 set role anon;
-select t.ok((select jsonb_array_length(public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records') = 2), 'the student sees both years');
+select t.expect_error($$select public.portal_link_records(null)$$, '%permission denied%');
 :as_admin
-delete from public.academic_years where id = :'y2';
+select t.ok((public.portal_link_history(null) ->> 'linked')::int = 2, 'earlier years linked: by name (hamza variant), then by student number');
+select t.ok((public.portal_link_history(null) ->> 'linked')::int = 0, 'linking again changes nothing');
+reset role;
+select t.ok((select count(*) = 3 from public.students where portal_account_id = (select portal_account_id from public.students where id = :'st1')),
+            'three records on the same account');
+select t.ok((select portal_account_id is null from public.students where year_id = :'y00' and department_id = :'rad'),
+            'a namesake with an implausible stage is not linked');
+select t.ok((select student_no = 'S-100' from public.portal_accounts where login_id = :'plogin'), 'the account learns the student number');
+set role anon;
+select t.ok((select jsonb_array_length(r) = 3 and r -> 0 ->> 'year' = '2026-2027' and r -> 1 ->> 'year' = '2025-2026' and r -> 2 ->> 'year' = '2024-2025'
+             from (select public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records' as r) x), 'the student sees every stage, newest first');
+-- الطالب نفسه في سنة لاحقة يحتفظ بحسابه (بالاسم في القسم نفسه)
+:as_admin
+insert into public.academic_years (label) values ('2027-2028') returning id as y2 \gset
+select public.add_students(:'y2', :'rad', 3::smallint, 'morning', array['احمد كريم جواد', 'طالب جديد تماماً']);
+select t.ok((select r ->> 'created' = '1' and r ->> 'linked' = '1' and r ->> 'history' = '0' from public.portal_generate_accounts(:'y2', :'rad') r), 'returning student keeps the same account');
+reset role;
+set role anon;
+select t.ok((select jsonb_array_length(public.portal_login(:'plogin', :'pcode2') -> 'data' -> 'records') = 4), 'the student sees all four years');
+-- إنشاء الحسابات في سنة يربط سجلات السنوات الأخرى للحسابات الجديدة أيضاً
+:as_admin
+select public.add_students(:'y0', :'rad', 2::smallint, 'morning', array['طالب جديد تماماً']);
+reset role;
+delete from public.portal_accounts where id = (select portal_account_id from public.students where year_id = :'y2' and full_name = 'طالب جديد تماماً');
+:as_admin
+select t.ok((select r ->> 'created' = '1' and r ->> 'history' = '1' from public.portal_generate_accounts(:'y2', :'rad') r), 'a new account picks up the earlier-year record');
+delete from public.students where year_id = :'y0' and department_id = :'rad' and full_name in ('أحمد كريم جواد', 'طالب جديد تماماً');
+delete from public.academic_years where id in (:'y2', :'y00');
 delete from public.announcements where audience = 'students';
 
 -- ===== كلمات المرور =====

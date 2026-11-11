@@ -23,6 +23,7 @@ export function PortalPage() {
 }
 
 const classId = (c: { department_id: string; stage: number; shift: string }) => `${c.department_id}|${c.stage}|${c.shift}`
+const historyText = (n: number | undefined) => (n ? `، ورُبط ${n} ${n === 1 ? 'سجل' : 'سجلات'} من سنوات أخرى بحسابات أصحابها` : '')
 
 function Portal() {
   const s = useSession()
@@ -65,7 +66,7 @@ function Portal() {
     setBusy(`gen|${classId(c)}`)
     try {
       const r = await backend.portalGenerateAccounts(keyOf(c))
-      toast.success(`أُنشئ ${r.created} حساب${r.linked ? `، واحتفظ ${r.linked} طالب بحسابه السابق` : ''}`)
+      toast.success(`أُنشئ ${r.created} حساب${r.linked ? `، واحتفظ ${r.linked} طالب بحسابه السابق` : ''}${historyText(r.history)}`)
       await refresh()
     } catch (e) {
       toast.error(e)
@@ -76,12 +77,27 @@ function Portal() {
 
   const generateAll = async () => {
     const missing = classes.filter((c) => c.accounts < c.students && canCards(c))
-    if (!missing.length) return toast.info('كل الطلبة لديهم حسابات')
     setBusy('gen-all')
     let created = 0
+    let history = 0
     try {
-      for (const c of missing) created += (await backend.portalGenerateAccounts(keyOf(c))).created
-      toast.success(`أُنشئ ${created} حساب جديد`)
+      for (const c of missing) {
+        const r = await backend.portalGenerateAccounts(keyOf(c))
+        created += r.created
+        history += r.history ?? 0
+      }
+      // حتى لو كانت الحسابات مكتملة: سجلات الطلبة في السنوات الأخرى تُربط بحساباتهم ليروا كل مراحلهم
+      const scope = isHead ? s.profile.department_id : dept || null
+      let linkError: unknown = null
+      try {
+        if (manage || isHead) history += (await backend.portalLinkHistory(scope)).linked
+      } catch (e) {
+        linkError = e // قاعدة بيانات لم تُحدَّث بعد: تُعرض الرسالة بعد نتيجة إنشاء الحسابات
+      }
+      if (created) toast.success(`أُنشئ ${created} حساب جديد${historyText(history)}`)
+      else if (history) toast.success(`كل الطلبة لديهم حسابات${historyText(history)}`)
+      else if (!linkError) toast.info('كل الطلبة لديهم حسابات، وسجلات السنوات الأخرى مربوطة')
+      if (linkError) toast.error(linkError)
     } catch (e) {
       toast.error(e)
     } finally {
@@ -109,6 +125,57 @@ function Portal() {
       return item && isStalePublication(p, changes) && !publishBlocker(p.kind, p.term, changes) ? [{ c, item }] : []
     })
   }, [ov, dept])
+
+  // نتائج جاهزة للنشر (كل قوائمها معتمدة) ولم تُنشر بعد — تُنشر دفعة واحدة، وهو الأسهل للسنوات السابقة
+  const readyResults = useMemo(() => {
+    if (!ov) return []
+    return classes.flatMap((c) => {
+      const changes = ov.changes.filter((x) => classId(x) === classId(c))
+      return PORTAL_ITEMS.filter(
+        (it) => it.kind === 'results' && !publishBlocker(it.kind, it.term, changes) && !ov.publications.some((p) => classId(p) === classId(c) && p.term === it.term && p.kind === it.kind),
+      ).map((item) => ({ c, item }))
+    })
+  }, [ov, classes])
+
+  const publishReady = async () => {
+    const ok = await confirm({
+      title: 'نشر النتائج الجاهزة',
+      message: (
+        <div className="space-y-2">
+          <p>
+            ستُنشر للطلبة <b>{readyResults.length}</b> {readyResults.length === 1 ? 'نتيجة' : 'نتائج'} اعتُمدت كل قوائمها ولم تُنشر بعد في السنة الدراسية المختارة ({s.year?.label}):
+          </p>
+          <ul className="list-disc space-y-0.5 ps-5 text-muted">
+            {readyResults.slice(0, 8).map(({ c, item }) => (
+              <li key={`${classId(c)}|${item.term}`}>
+                {item.label} — {title(c)}
+              </li>
+            ))}
+            {readyResults.length > 8 && <li>و{readyResults.length - 8} أخرى…</li>}
+          </ul>
+          <p className="text-muted">يرى كل طالب تقديراته وحالته النهائية فقط (دون درجات). السعي لا يُنشر بهذا الزر.</p>
+        </div>
+      ),
+      confirmText: 'نشر الكل',
+    })
+    if (!ok) return
+    setBusy('ready-all')
+    const base = `${window.location.origin}${window.location.pathname}`
+    let done = 0
+    try {
+      for (const { c, item } of readyResults) {
+        const snapshots = await snapshotsFor(c, item.term, item.kind)
+        await backend.portalPublish({ ...keyOf(c), term: item.term, kind: item.kind, exam_url: base, snapshots })
+        done++
+      }
+      toast.success(`نُشرت ${done} ${done === 1 ? 'نتيجة' : 'نتائج'} للطلبة`)
+    } catch (e) {
+      toast.error(e)
+    } finally {
+      await refresh()
+      setBusy(null)
+    }
+  }
 
   const refreshStale = async () => {
     const ok = await confirm({
@@ -249,6 +316,11 @@ function Portal() {
                     </option>
                   ))}
                 </Select>
+              )}
+              {manage && readyResults.length > 0 && (
+                <Button icon={<Send className="size-4" />} loading={busy === 'ready-all'} disabled={!!busy} onClick={publishReady}>
+                  نشر النتائج الجاهزة ({readyResults.length})
+                </Button>
               )}
               {manage && staleList.length > 0 && (
                 <Button variant="primary" icon={<RefreshCw className="size-4" />} loading={busy === 'stale-all'} disabled={!!busy} onClick={refreshStale}>
@@ -396,6 +468,10 @@ function Portal() {
           <li>السعي يظهر للطالب كمجموع لكل مادة فقط، والنتيجة تظهر بالتقديرات والحالة النهائية دون درجات.</li>
           <li>إذا عُدّلت الدرجات بعد النشر تظهر علامة «تغيّرت بعد النشر»؛ اضغط «تحديث» لنشر النسخة الجديدة.</li>
           <li>لإعلان يظهر للطلبة: الإعلانات ← إعلان جديد ← يظهر لـ «الطلبة».</li>
+          <li>
+            يرى الطالب كل مراحله بحساب واحد: سجلاته في السنوات الأخرى تُربط بحسابه تلقائياً (بالرقم الجامعي أو بالاسم في القسم نفسه). لنشر نتائج سنة سابقة اختر السنة الدراسية من أعلى الصفحة
+            ثم اضغط «نشر النتائج الجاهزة».
+          </li>
         </ul>
       </Callout>
       </div>
