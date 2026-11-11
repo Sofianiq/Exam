@@ -449,6 +449,19 @@ export class DemoBackend implements Backend {
       classes: [...classes.values()],
       publications: this.db.portal.publications.filter((p) => p.year_id === yearId && mine(p.department_id)),
       changes: [...changes.values()],
+      withheld: this.db.students
+        .filter((st) => st.year_id === yearId && st.result_withheld && mine(st.department_id))
+        .sort((a, b) => (b.withheld_at ?? '').localeCompare(a.withheld_at ?? ''))
+        .map((st) => ({
+          student_id: st.id,
+          full_name: st.full_name,
+          department_id: st.department_id,
+          stage: st.stage,
+          shift: st.shift,
+          reason: st.withheld_reason ?? null,
+          at: st.withheld_at ?? null,
+          by_name: st.withheld_by_name ?? null,
+        })),
     })
   }
 
@@ -555,6 +568,20 @@ export class DemoBackend implements Backend {
     this.persist()
   }
 
+  async setResultWithheld(studentId: string, withheld: boolean, reason?: string | null): Promise<void> {
+    await wait()
+    const me = this.me()
+    if (!canViewAll(me)) fail('حجب النتيجة من صلاحية الإدارة واللجنة الامتحانية فقط')
+    const st = this.db.students.find((x) => x.id === studentId) ?? fail('الطالب غير موجود')
+    const note = (reason ?? '').trim().slice(0, 300) || null
+    st.result_withheld = withheld
+    st.withheld_reason = withheld ? note : null
+    st.withheld_at = withheld ? new Date().toISOString() : null
+    st.withheld_by_name = withheld ? me.full_name : null
+    this.audit(withheld ? 'student.withhold' : 'student.unwithhold', 'student', st.id, st.department_id, `${withheld ? 'حجب نتيجة الطالب' : 'رفع حجب نتيجة الطالب'}: ${st.full_name}`, withheld ? { reason: note } : null)
+    this.persist()
+  }
+
   async verifyResult(code: string): Promise<VerifiedResult | null> {
     await wait(20)
     const c = code.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
@@ -564,7 +591,7 @@ export class DemoBackend implements Backend {
     const dept = this.db.departments.find((d) => d.id === st.department_id)
     const set = this.db.settings
     const subjects = this.db.subjects
-      .filter((s) => sameClass(s, st))
+      .filter((s) => sameClass(s, st) && !st.result_withheld)
       .sort((a, b) => a.term - b.term || a.sort - b.sort || a.name.localeCompare(b.name, 'ar'))
       .map<VerifiedSubject>((s) => {
         const g = this.db.grades.find((x) => x.subject_id === s.id && x.student_id === st.id)
@@ -593,6 +620,7 @@ export class DemoBackend implements Backend {
       })
     return {
       code: st.verify_code,
+      withheld: !!st.result_withheld,
       student: { full_name: st.full_name, stage: st.stage, shift: st.shift, status: st.status, seq: st.seq },
       department: dept ? { name: dept.name, head_name: dept.head_name ?? null } : null,
       year: this.db.years.find((y) => y.id === st.year_id)?.label ?? null,

@@ -64,6 +64,10 @@ export function translateError(e: PgError | Error | unknown): AppError {
     if (/curriculum/.test(msg + (err.details ?? ''))) return new AppError('توجد مادة بنفس الاسم في هذه المرحلة والفصل من الخطة.')
     return new AppError('القيمة موجودة مسبقاً.')
   }
+  // دالة أو عمود غير موجود: الواجهة أحدث من قاعدة البيانات
+  if (err.code === 'PGRST202' || err.code === '42883' || err.code === '42703' || /Could not find the function|schema cache/i.test(msg)) {
+    return new AppError('هذه الخاصية تتطلب تحديث قاعدة البيانات: شغّل ملف supabase/schema.sql الأحدث في SQL Editor ثم أعد المحاولة.')
+  }
   if (err.code === '23503') return new AppError('لا يمكن تنفيذ العملية لوجود بيانات مرتبطة.')
   if (err.code === '23514' || err.code === '22P02') return new AppError('قيمة غير صالحة. تحقق من البيانات المدخلة.')
   return new AppError(msg || 'حدث خطأ غير متوقع.')
@@ -498,6 +502,10 @@ export class SupabaseBackend implements Backend {
 
   async portalUnpublish(k: ClassKey, term: PortalTerm, kind: PortalKind): Promise<void> {
     await this.rpc('portal_unpublish', { p_year_id: k.year_id, p_department_id: k.department_id, p_stage: k.stage, p_shift: k.shift, p_term: term, p_kind: kind })
+  }
+
+  async setResultWithheld(studentId: string, withheld: boolean, reason?: string | null): Promise<void> {
+    await this.rpc('set_result_withheld', { p_student_id: studentId, p_withheld: withheld, p_reason: reason ?? null })
   }
 
   // ---------- الإعلانات ----------

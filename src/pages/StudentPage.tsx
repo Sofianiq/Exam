@@ -1,18 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 import { printPage, usePrinting } from '../app/print'
-import { ChevronLeft, History, Printer } from 'lucide-react'
+import { ChevronLeft, Eye, EyeOff, History, Printer } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { classKeyOf, useGrades, useSubjects } from '../app/queries'
 import { buildStudentReport, type ReportSection } from '../app/results'
 import { useSession } from '../app/session'
 import { ResultSheets, scopeLabel, type ResultScope, type SlipProps } from '../components/ResultSlip'
-import { Badge, Button, Card, CardHeader, LoadingBlock, PageHeader, Segmented, cx } from '../components/ui'
+import { Badge, Button, Callout, Card, CardHeader, LoadingBlock, PageHeader, Segmented, cx } from '../components/ui'
+import { WithholdDialog } from '../components/WithholdDialog'
 import { backend } from '../data'
 import type { StudentSummary } from '../lib/calc'
-import { fmtNum, unitsLabel, yearLabel } from '../lib/format'
+import { fmtDateTime, fmtNum, unitsLabel, yearLabel } from '../lib/format'
 import { SHIFT_LABEL, SPECIAL_LABEL, STUDENT_STATUS_LABEL, TERM_LABEL, stageLabel } from '../lib/labels'
-import { canSeeDepartment } from '../lib/perm'
+import { canSeeDepartment, canViewAll } from '../lib/perm'
 import { NotFoundPage } from './NotFoundPage'
 import { ScaledPreview } from './ResultsPage'
 
@@ -24,6 +25,7 @@ export function StudentPage() {
   const s = useSession()
   const [scope, setScope] = useState<ResultScope | null>(null)
   const [copies, setCopies] = useState<1 | 2>(2)
+  const [withholding, setWithholding] = useState(false)
   const studentQ = useQuery({ queryKey: ['student', studentId], queryFn: () => backend.getStudent(studentId!), enabled: !!studentId })
   const student = studentQ.data ?? undefined
   const subjectsQ = useSubjects(student ? classKeyOf(student) : { year_id: '' }, !!student)
@@ -82,10 +84,21 @@ export function StudentPage() {
               )}
               {student.status !== 'active' && <Badge tone="warning">{STUDENT_STATUS_LABEL[student.status]}</Badge>}
               {student.legacy_import_id && <Badge tone="info">مرحّل من النظام السابق</Badge>}
+              {student.result_withheld && (
+                <Badge tone="danger" icon={<EyeOff className="size-3.5" />}>
+                  النتيجة محجوبة
+                </Badge>
+              )}
             </span>
           }
           actions={
-            scopes.length > 0 && (
+            <>
+              {canViewAll(s.profile) && (
+                <Button size="sm" variant={student.result_withheld ? 'secondary' : 'danger-soft'} icon={student.result_withheld ? <Eye className="size-4" /> : <EyeOff className="size-4" />} onClick={() => setWithholding(true)}>
+                  {student.result_withheld ? 'رفع الحجب' : 'حجب النتيجة'}
+                </Button>
+              )}
+              {scopes.length > 0 && (
               <>
                 <Segmented value={effectiveScope} onChange={setScope} options={scopes} size="sm" />
                 <Segmented<1 | 2>
@@ -109,9 +122,23 @@ export function StudentPage() {
                   طباعة النتيجة
                 </Button>
               </>
-            )
+              )}
+            </>
           }
         />
+
+        {student.result_withheld && (
+          <Callout tone="danger" icon={<EyeOff className="size-5" />} title="نتيجة هذا الطالب محجوبة مؤقتاً" className="mb-4">
+            لا تظهر النتيجة للطالب في بوابة الطالب ولا في صفحة التحقق برمز QR، ولا تُطبع مع الطباعة الجماعية للنتائج. الدرجات أدناه كما هي داخل النظام.
+            {(student.withheld_at || student.withheld_by_name) && (
+              <span className="mt-1 block text-xs">
+                حُجبت {student.withheld_at ? fmtDateTime(student.withheld_at) : ''}
+                {student.withheld_by_name ? ` — بواسطة ${student.withheld_by_name}` : ''}
+              </span>
+            )}
+            {student.withheld_reason && <span className="mt-1 block text-xs">الملاحظة الظاهرة للطالب: «{student.withheld_reason}»</span>}
+          </Callout>
+        )}
 
         <div className="space-y-4">
           {report.sections.map((sec) => (
@@ -142,6 +169,7 @@ export function StudentPage() {
         )}
       </div>
       {printing && report.sections.length > 0 && <ResultSheets items={slips} className="print-only" />}
+      {withholding && <WithholdDialog student={student} onClose={() => setWithholding(false)} />}
     </div>
   )
 }

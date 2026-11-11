@@ -69,6 +69,8 @@ export const ACTION_LABEL: Record<string, string> = {
   'report.export': 'تصدير تقرير',
   'report.print': 'طباعة تقرير',
   'backup.export': 'نسخة احتياطية',
+  'student.withhold': 'حجب نتيجة طالب',
+  'student.unwithhold': 'رفع حجب نتيجة طالب',
   'portal.publish': 'نشر في بوابة الطالب',
   'portal.unpublish': 'سحب نشر من بوابة الطالب',
   'portal.accounts': 'إنشاء حسابات الطلبة',
