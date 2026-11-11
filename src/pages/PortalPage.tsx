@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { PORTAL_ITEMS, buildPortalSnapshots, portalLoginUrl, publishBlocker } from '../app/portal'
+import { PORTAL_ITEMS, buildPortalSnapshots, isStalePublication, portalLoginUrl, publishBlocker } from '../app/portal'
 import { printPage, usePrinting } from '../app/print'
 import { useSession } from '../app/session'
 import { errorText, useConfirm, useToast } from '../components/feedback'
@@ -87,14 +87,71 @@ function Portal() {
     }
   }
 
+  /** يحسب النسخة التي سيراها كل طالب بالمحرك نفسه المستخدم في النتائج الرسمية */
+  const snapshotsFor = async (c: PortalClassInfo, term: PortalTerm, kind: PortalKind) => {
+    const k = keyOf(c)
+    const [subjects, students] = await Promise.all([backend.listSubjects(k), backend.listStudents(k)])
+    const grades = await backend.getGrades(subjects.map((x) => x.id))
+    return buildPortalSnapshots(kind, term, subjects, students, grades, s.settings)
+  }
+
+  // المنشورات التي عُدّلت درجاتها بعد النشر (ويمكن تحديثها الآن)
+  const staleList = useMemo(() => {
+    if (!ov) return []
+    return ov.publications.flatMap((p) => {
+      const c = ov.classes.find((x) => classId(x) === classId(p))
+      if (!c || (dept && c.department_id !== dept)) return []
+      const changes = ov.changes.filter((x) => classId(x) === classId(c))
+      const item = PORTAL_ITEMS.find((it) => it.term === p.term && it.kind === p.kind)
+      return item && isStalePublication(p, changes) && !publishBlocker(p.kind, p.term, changes) ? [{ c, item }] : []
+    })
+  }, [ov, dept])
+
+  const refreshStale = async () => {
+    const ok = await confirm({
+      title: 'تحديث كل ما تغيّر بعد النشر',
+      message: (
+        <div className="space-y-2">
+          <p>
+            سيُعاد نشر <b>{staleList.length}</b> {staleList.length === 1 ? 'عنصر' : 'عناصر'} عُدّلت درجاتها بعد النشر، ليرى الطلبة أحدث نسخة:
+          </p>
+          <ul className="list-disc space-y-0.5 ps-5 text-muted">
+            {staleList.slice(0, 8).map(({ c, item }) => (
+              <li key={`${classId(c)}|${item.term}|${item.kind}`}>
+                {item.label} — {title(c)}
+              </li>
+            ))}
+            {staleList.length > 8 && <li>و{staleList.length - 8} أخرى…</li>}
+          </ul>
+        </div>
+      ),
+      confirmText: 'تحديث الكل',
+    })
+    if (!ok) return
+    setBusy('stale-all')
+    const base = `${window.location.origin}${window.location.pathname}`
+    let done = 0
+    try {
+      for (const { c, item } of staleList) {
+        const snapshots = await snapshotsFor(c, item.term, item.kind)
+        await backend.portalPublish({ ...keyOf(c), term: item.term, kind: item.kind, exam_url: base, snapshots })
+        done++
+      }
+      toast.success(`حُدّث نشر ${done} ${done === 1 ? 'عنصر' : 'عناصر'}`)
+    } catch (e) {
+      toast.error(e)
+    } finally {
+      await refresh()
+      setBusy(null)
+    }
+  }
+
   const publish = async (c: PortalClassInfo, term: PortalTerm, kind: PortalKind, label: string, republish: boolean) => {
     const id = `pub|${classId(c)}|${term}|${kind}`
     setBusy(id)
     try {
       const k = keyOf(c)
-      const [subjects, students] = await Promise.all([backend.listSubjects(k), backend.listStudents(k)])
-      const grades = await backend.getGrades(subjects.map((x) => x.id))
-      const snapshots = buildPortalSnapshots(kind, term, subjects, students, grades, s.settings)
+      const snapshots = await snapshotsFor(c, term, kind)
       const ok = await confirm({
         title: `${republish ? 'تحديث نشر' : 'نشر'} ${label}`,
         message: (
@@ -187,6 +244,11 @@ function Portal() {
                     </option>
                   ))}
                 </Select>
+              )}
+              {manage && staleList.length > 0 && (
+                <Button variant="primary" icon={<RefreshCw className="size-4" />} loading={busy === 'stale-all'} disabled={!!busy} onClick={refreshStale}>
+                  تحديث ما تغيّر ({staleList.length})
+                </Button>
               )}
               <Button icon={<UserPlus className="size-4" />} loading={busy === 'gen-all'} disabled={!!busy} onClick={generateAll}>
                 إنشاء الحسابات الناقصة
@@ -300,9 +362,7 @@ function PublishCell({
   onUnpublish: () => void
 }) {
   const blocker = publishBlocker(kind, term, changes)
-  const terms = term === 0 ? [1, 2] : [term]
-  const changedAt = changes.filter((c) => terms.includes(c.term)).reduce<string | null>((m, c) => (c.changed_at && (!m || c.changed_at > m) ? c.changed_at : m), null)
-  const stale = !!pub && !!changedAt && changedAt > pub.published_at
+  const stale = isStalePublication(pub, changes)
   if (pub) {
     return (
       <div className="flex flex-col items-center gap-1">

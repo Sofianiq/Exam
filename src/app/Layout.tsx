@@ -33,6 +33,7 @@ import { displayName, yearLabel } from '../lib/format'
 import { ROLE_LABEL, SHIFT_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canEditSettings, canManageUsers, canReview, canSeeAudit, canToggleEntry, canViewAll } from '../lib/perm'
 import { isActive, useAnnouncements, useSeenAnnouncements, isForStaff } from './announcements'
+import { preloadRoute, preloadWhenIdle } from './preload'
 import { useSubjects } from './queries'
 import { useInstallPrompt, useTheme } from './hooks'
 import { useSession } from './session'
@@ -77,6 +78,10 @@ export function Layout() {
   if (canSeeAudit(profile)) items.push({ to: '/audit', label: 'سجل العمليات', icon: <History className="size-4.5" /> })
   if (canEditSettings(profile)) items.push({ to: '/settings', label: 'الإعدادات', icon: <SettingsIcon className="size-4.5" /> })
 
+  // صفحات القائمة تُحمَّل في وقت الفراغ ليفتح كل تبويب فوراً
+  const navPaths = items.map((it) => it.to).join('|')
+  useEffect(() => preloadWhenIdle(navPaths.split('|')), [navPaths])
+
   return (
     <div className="app-shell min-h-dvh lg:ps-68">
       {/* الشريط الجانبي */}
@@ -103,6 +108,8 @@ export function Layout() {
               key={it.to}
               to={it.to}
               end={it.end}
+              onPointerEnter={() => void preloadRoute(it.to)}
+              onFocus={() => void preloadRoute(it.to)}
               className={({ isActive }) =>
                 cx(
                   'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition',

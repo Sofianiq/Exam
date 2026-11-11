@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Grade, Settings, Student, Subject } from '../lib/types'
-import { buildPortalSnapshots, portalLoginUrl, publishBlocker } from './portal'
+import { buildPortalSnapshots, isStalePublication, portalLoginUrl, publishBlocker } from './portal'
 
 const settings: Settings = {
   university_name: '',
@@ -135,6 +135,21 @@ describe('student portal snapshots', () => {
     expect(publishBlocker('results', 2, changes)).toBeNull()
     expect(publishBlocker('results', 0, changes)).toBe('2 من قوائم الفصل الأول لم تُعتمد بعد')
     expect(publishBlocker('coursework', 1, [])).toBe('لا توجد مواد في الفصل الأول')
+  })
+
+  it('flags a publication as stale only when grades changed after it', () => {
+    const base = { department_id: 'd', stage: 1, shift: 'morning' as const, subjects: 3, approved: 3 }
+    const changes = [
+      { ...base, term: 1 as const, changed_at: '2026-01-10T10:00:00Z' },
+      { ...base, term: 2 as const, changed_at: '2026-06-01T10:00:00Z' },
+    ]
+    expect(isStalePublication({ term: 1, published_at: '2026-01-11T00:00:00Z' }, changes)).toBe(false)
+    expect(isStalePublication({ term: 1, published_at: '2026-01-09T00:00:00Z' }, changes)).toBe(true)
+    // النتيجة السنوية تتأثر بأي من الفصلين
+    expect(isStalePublication({ term: 0, published_at: '2026-05-01T00:00:00Z' }, changes)).toBe(true)
+    expect(isStalePublication({ term: 0, published_at: '2026-07-01T00:00:00Z' }, changes)).toBe(false)
+    expect(isStalePublication(undefined, changes)).toBe(false)
+    expect(isStalePublication({ term: 2, published_at: '2026-01-01T00:00:00Z' }, [{ ...base, term: 2 as const, changed_at: null }])).toBe(false)
   })
 
   it('builds the direct sign-in link for the card QR code', () => {

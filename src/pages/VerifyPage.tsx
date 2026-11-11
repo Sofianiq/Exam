@@ -134,6 +134,13 @@ export function VerifyPage({ code }: { code: string }) {
               </section>
             )}
 
+            {!pending && (
+              <div className="flex flex-col items-center gap-1 pt-1">
+                <img src="./seal.png" alt="ختم: معتمد من اللجنة الامتحانية" width={132} height={132} className="-rotate-[9deg] opacity-95 select-none" draggable={false} />
+                <span className="text-xs font-semibold text-[#1f5f3f]">نتيجة معتمدة من اللجنة الامتحانية</span>
+              </div>
+            )}
+
             <p className="text-center text-xs text-[#5f697b]">
               رمز التحقق: <b dir="ltr">{formatCode(v.code)}</b> — وقت التحقق: {fmtDateTime(new Date())}
             </p>
