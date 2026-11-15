@@ -250,19 +250,23 @@
   background-color: color-mix(in srgb, var(--primary-soft) 45%, var(--surface));
 }
 
-/* ===== الماستر شيت: عناوين عمودية وأعمدة ملوّنة للتدقيق (الشاشة والطباعة) ===== */
+/* ===== الماستر شيت: ترتيب سجل درجات برنامج اللجنة (الدور الأول ← الدور الثاني ← الدرجة النهائية) ===== */
 .ms {
   --ms-base: var(--surface);
+  --ms-zebra: color-mix(in srgb, var(--text) 3%, var(--surface));
   --ms-line: var(--border);
   --ms-strong: color-mix(in srgb, var(--text) 42%, var(--surface));
   --ms-head: var(--surface-2);
-  --ms-cw: color-mix(in srgb, var(--info) 8%, var(--surface));
-  --ms-cw-head: color-mix(in srgb, var(--info) 19%, var(--surface));
-  --ms-fin-head: var(--surface-2);
-  --ms-tot: color-mix(in srgb, var(--primary) 10%, var(--surface));
-  --ms-tot-head: color-mix(in srgb, var(--primary) 22%, var(--surface));
-  --ms-r2: color-mix(in srgb, var(--gold) 15%, var(--surface));
-  --ms-failbg: color-mix(in srgb, var(--danger) 15%, var(--surface));
+  --ms-subj-a: color-mix(in srgb, var(--info) 15%, var(--surface));
+  --ms-subj-b: color-mix(in srgb, var(--success) 15%, var(--surface));
+  --ms-r1-head: var(--surface-2);
+  --ms-r2-head: color-mix(in srgb, var(--info) 20%, var(--surface));
+  --ms-r2: color-mix(in srgb, var(--info) 12%, var(--surface));
+  --ms-final-head: color-mix(in srgb, var(--gold) 24%, var(--surface));
+  --ms-final: color-mix(in srgb, var(--gold) 7%, var(--surface));
+  --ms-dec: color-mix(in srgb, var(--gold) 42%, var(--surface));
+  --ms-carrybg: color-mix(in srgb, var(--warning) 28%, var(--surface));
+  --ms-failbg: color-mix(in srgb, var(--danger) 13%, var(--surface));
   --ms-sumbg: var(--surface-2);
   --ms-avgbg: var(--gold-soft);
   --ms-pass: var(--success);
@@ -287,7 +291,7 @@
 .ms thead th {
   background: var(--ms-head);
   font-weight: 700;
-  vertical-align: bottom;
+  vertical-align: middle;
 }
 .ms thead tr:last-child th,
 .ms tbody tr:last-child td {
@@ -299,28 +303,38 @@
   border-inline-start: 2px solid var(--ms-strong);
 }
 /* فاصل بعد كل خمسة طلبة */
-.ms tr.ms-five > td,
-.ms td.ms-b5 {
+.ms tr.ms-five > td {
   border-bottom: 2px solid var(--ms-strong);
+}
+.ms tr.ms-zebra > td {
+  background: var(--ms-zebra);
 }
 /* النص العمودي (يُقرأ من الأسفل إلى الأعلى كما في جداول Excel) */
 .ms .ms-v {
   display: inline-block;
   writing-mode: vertical-rl;
   transform: rotate(180deg);
-  white-space: normal;
+  white-space: nowrap;
   text-align: start;
   line-height: 1.25;
 }
-.ms .ms-subject .ms-v {
-  max-height: 8em;
+.ms .ms-v small {
+  display: block;
+  font-size: 0.82em;
+  font-weight: 400;
+  opacity: 0.8;
 }
-/* ارتفاع صريح لصفّي العناوين: المتصفح لا يحسب ارتفاع النص العمودي بثبات عند الطباعة */
+/* اسم المادة أفقياً فوق أعمدتها، والوحدات تحته */
 .ms th.ms-subject {
-  height: 8.7em;
+  padding-block: 0.35em;
+  white-space: normal;
+  line-height: 1.25;
 }
-.ms th.ms-sub {
-  height: 4.9em;
+.ms th.ms-subj-a {
+  background: var(--ms-subj-a);
+}
+.ms th.ms-subj-b {
+  background: var(--ms-subj-b);
 }
 .ms .ms-subject-name {
   display: block;
@@ -329,95 +343,114 @@
 .ms .ms-subject-units {
   display: block;
   font-weight: 400;
-  font-size: 0.88em;
-  opacity: 0.75;
+  font-size: 0.86em;
+  opacity: 0.8;
 }
-.ms .ms-sub .ms-v {
-  font-weight: 600;
+.ms .ms-dot {
+  margin-inline-start: 0.35em;
+}
+/* النتيجة السنوية: عمود واحد لكل مادة واسمها عمودي */
+.ms th.ms-subject-v {
+  height: 8.7em;
+  vertical-align: bottom;
+}
+.ms th.ms-subject-v .ms-v {
+  max-height: 8em;
+  white-space: normal;
+}
+.ms th.ms-round {
+  font-size: 0.92em;
   white-space: nowrap;
 }
+.ms th.ms-r1h {
+  background: var(--ms-r1-head);
+}
+.ms th.ms-r2h {
+  background: var(--ms-r2-head);
+}
+/* ارتفاع صريح لعناوين الأعمدة العمودية: المتصفح لا يحسب ارتفاع النص العمودي بثبات عند الطباعة */
+.ms th.ms-sub {
+  height: 8.6em;
+  vertical-align: bottom;
+}
+/* مساحة محجوزة للنص العمودي: المتصفح يقدّر طول النص العربي العمودي بأقل من حقيقته عند الطباعة */
+.ms th.ms-sub .ms-v {
+  min-height: 7.2em;
+  font-weight: 600;
+}
+.ms th.ms-finh {
+  background: var(--ms-final-head);
+}
 /* الدرجة القصوى أفقية تحت عنوان العمود العمودي */
-.ms .ms-sub b {
+.ms th.ms-sub b {
   display: block;
   margin-top: 0.15em;
   font-weight: 700;
   line-height: 1.1;
 }
 .ms .ms-term {
-  vertical-align: middle;
   font-size: 1.05em;
 }
-/* ألوان الأعمدة */
-.ms td.ms-cw {
-  background: var(--ms-cw);
-}
-.ms th.ms-cw {
-  background: var(--ms-cw-head);
-}
-.ms th.ms-fin {
-  background: var(--ms-fin-head);
-}
-.ms td.ms-tot {
-  background: var(--ms-tot);
+/* الخلايا */
+.ms tr > td.ms-c-final {
+  background: var(--ms-final);
   font-weight: 700;
 }
-.ms th.ms-tot {
-  background: var(--ms-tot-head);
+.ms tr > td.ms-t-r2 {
+  background: var(--ms-r2);
 }
-.ms td.ms-fail {
+.ms tr > td.ms-t-dec {
+  background: var(--ms-dec);
+}
+.ms tr > td.ms-t-carry {
+  background: var(--ms-carrybg);
+  color: var(--ms-failtext);
+}
+.ms tr > td.ms-t-fail {
   background: var(--ms-failbg);
   color: var(--ms-failtext);
-  font-weight: 700;
 }
-.ms td.ms-ok {
-  color: var(--ms-pass);
-}
-.ms td.ms-special {
+.ms td.ms-t-special {
   color: var(--ms-carry);
-  font-weight: 700;
-}
-.ms tr.ms-r2 > td {
-  background: var(--ms-r2);
-  font-size: 0.92em;
-}
-.ms tr.ms-r2 > td.ms-fail {
-  background: var(--ms-failbg);
-}
-.ms td.ms-r2-tag {
-  color: var(--gold-text);
-  font-weight: 700;
-  font-size: 0.82em;
-}
-.ms td.ms-r2-total {
   font-weight: 700;
 }
 .ms sup.ms-mark-r2,
 .ms sup.ms-mark-dec {
-  margin-inline-start: 1px;
   font-size: 0.68em;
+  margin-inline-start: 1px;
   font-weight: 700;
 }
 .ms sup.ms-mark-r2 {
-  color: var(--gold-text);
+  color: var(--ms-carry);
 }
 .ms sup.ms-mark-dec {
   color: var(--ms-info);
 }
-/* أعمدة الخلاصة */
-.ms td.ms-sum {
+.ms tr > td.ms-sum {
   background: var(--ms-sumbg);
-  font-weight: 600;
+  font-weight: 700;
 }
-.ms td.ms-avg {
+.ms tr > td.ms-avg {
   background: var(--ms-avgbg);
   font-weight: 700;
+}
+.ms th.ms-sum,
+.ms th.ms-avg,
+.ms th.ms-rank {
+  vertical-align: bottom;
+}
+.ms th.ms-sum {
+  background: var(--ms-sumbg);
+}
+.ms th.ms-avg {
+  background: var(--ms-avgbg);
 }
 .ms td.ms-rank {
   font-weight: 600;
 }
 .ms td.ms-result {
-  font-weight: 700;
   text-align: start;
+  font-weight: 600;
 }
 .ms td.ms-notes {
   text-align: start;
@@ -436,11 +469,11 @@
 }
 .ms td.ms-name {
   text-align: start;
-  white-space: nowrap;
   font-weight: 600;
+  white-space: nowrap;
 }
 .ms tr.ms-inactive > td {
-  color: var(--faint);
+  opacity: 0.6;
 }
 .ms tbody.ms-foot td {
   background: var(--ms-head);
@@ -467,16 +500,16 @@
 }
 .ms-screen thead th {
   font-size: 0.74rem;
-  padding-block: 0.45rem;
+  padding-block: 0.4rem;
 }
-.ms-screen td.ms-cw,
-.ms-screen td.ms-fin,
-.ms-screen td.ms-tot,
-.ms-screen tr.ms-r2 > td {
-  min-width: 2.35rem;
+.ms-screen td[class*='ms-c-'] {
+  min-width: 2.3rem;
 }
-.ms-screen.ms-compact td.ms-tot {
+.ms-screen.ms-compact td.ms-c-final {
   min-width: 2.7rem;
+}
+.ms-screen th.ms-subject:not(.ms-subject-v) {
+  min-width: 7rem;
 }
 .ms-screen .ms-seq,
 .ms-screen .ms-name,
@@ -502,11 +535,6 @@
 .ms-screen thead .ms-seq,
 .ms-screen thead .ms-name {
   z-index: 4;
-  vertical-align: middle;
-}
-.ms-screen thead .ms-result,
-.ms-screen thead .ms-notes {
-  vertical-align: middle;
 }
 .ms-screen .ms-result {
   min-width: 8.5rem;
@@ -528,7 +556,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 1rem;
+  gap: 0.35rem 1.1rem;
   font-size: 0.75rem;
   color: var(--muted);
 }
@@ -539,44 +567,54 @@
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  white-space: nowrap;
+}
+.ms-legend .ms-legend-formula {
+  color: var(--text);
+  font-weight: 600;
 }
 .ms-chip {
   display: inline-block;
-  width: 1.05rem;
-  height: 0.75rem;
-  border: 1px solid var(--border-strong);
+  width: 0.95rem;
+  height: 0.7rem;
+  border: 1px solid var(--border-strong, var(--border));
   border-radius: 2px;
 }
-.ms-chip-cw {
-  background: color-mix(in srgb, var(--info) 19%, var(--surface));
+.ms-chip-r1 {
+  background: var(--surface-2);
 }
-.ms-chip-fin {
-  background: var(--surface);
+.ms-chip-r2 {
+  background: color-mix(in srgb, var(--info) 22%, var(--surface));
 }
-.ms-chip-tot {
-  background: color-mix(in srgb, var(--primary) 22%, var(--surface));
+.ms-chip-final {
+  background: color-mix(in srgb, var(--gold) 24%, var(--surface));
+}
+.ms-chip-dec {
+  background: color-mix(in srgb, var(--gold) 48%, var(--surface));
+}
+.ms-chip-carry {
+  background: color-mix(in srgb, var(--warning) 34%, var(--surface));
 }
 .ms-chip-fail {
   background: color-mix(in srgb, var(--danger) 22%, var(--surface));
 }
-.ms-chip-r2 {
-  background: color-mix(in srgb, var(--gold) 26%, var(--surface));
-}
 
-/* --- الطباعة (ألوان ثابتة فاتحة مهما كان مظهر التطبيق) --- */
+/* --- الطباعة (ألوان سجل برنامج اللجنة، ثابتة فاتحة مهما كان مظهر التطبيق) --- */
 .ms-print {
   --ms-base: #fff;
-  --ms-line: #8a8a8a;
+  --ms-zebra: #fafafa;
+  --ms-line: #9a9a9a;
   --ms-strong: #1c1c1c;
-  --ms-head: #ecebe4;
-  --ms-cw: #e8f0fb;
-  --ms-cw-head: #cddff5;
-  --ms-fin-head: #f3f2ee;
-  --ms-tot: #e4f2e9;
-  --ms-tot-head: #c6e3d0;
-  --ms-r2: #fbf0d2;
-  --ms-failbg: #fbd9d5;
+  --ms-head: #ededed;
+  --ms-subj-a: #d9e2f3;
+  --ms-subj-b: #e2efda;
+  --ms-r1-head: #f2f2f2;
+  --ms-r2-head: #ddebf7;
+  --ms-r2: #ddebf7;
+  --ms-final-head: #fff2cc;
+  --ms-final: #fffbea;
+  --ms-dec: #ffd966;
+  --ms-carrybg: #f8cbad;
+  --ms-failbg: #fce4e1;
   --ms-sumbg: #f0efea;
   --ms-avgbg: #f6ebcb;
   --ms-pass: #0b6b3a;
@@ -589,13 +627,13 @@
 }
 .ms-print th,
 .ms-print td {
-  padding: 1.25pt 1.6pt;
+  padding: 1.1pt 1.4pt;
 }
 .ms-print thead th {
-  padding: 3pt 1.2pt;
+  padding: 2.4pt 1.1pt;
 }
 .ms-print td.ms-name {
-  padding-inline: 3.5pt;
+  padding-inline: 3pt;
 }
 .ms-print td.ms-seq {
   color: #333;
@@ -604,20 +642,28 @@
 .ms-print .ms-notes {
   font-size: 0.86em;
   white-space: normal;
-  padding-inline: 2.5pt;
+  padding-inline: 2.2pt;
 }
-/* عرض ثابت لعمودي النتيجة والملاحظات حتى تذهب المساحة الباقية لأعمدة الدرجات */
+.ms-print .ms-st-muted,
+.ms-print tr.ms-inactive > td {
+  color: #555;
+  opacity: 1;
+}
+.ms-print tr {
+  break-inside: avoid;
+}
+/* عرض ثابت لأعمدة الخلاصة حتى تذهب المساحة الباقية لأعمدة الدرجات */
 .print-ms-a3 .ms-print .ms-result {
-  width: 34mm;
-}
-.print-ms-a3 .ms-print .ms-notes {
   width: 30mm;
 }
+.print-ms-a3 .ms-print .ms-notes {
+  width: 26mm;
+}
 .print-ms-a4 .ms-print .ms-result {
-  width: 24mm;
+  width: 22mm;
 }
 .print-ms-a4 .ms-print .ms-notes {
-  width: 18mm;
+  width: 16mm;
 }
 /* ترويسة الطباعة المضغوطة */
 .ms-print-head {
@@ -625,18 +671,18 @@
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 8mm;
-  padding-bottom: 2mm;
-  border-bottom: 0.6mm solid #0b5a3a;
+  padding-bottom: 1.6mm;
+  border-bottom: 0.6mm solid #1f3864;
   color: #000;
 }
 .ms-print-side {
   display: flex;
   flex-direction: column;
-  font-size: 9.5pt;
-  line-height: 1.5;
+  font-size: 9pt;
+  line-height: 1.45;
 }
 .ms-print-side b {
-  font-size: 10.5pt;
+  font-size: 10pt;
 }
 .ms-print-end {
   text-align: left;
@@ -648,18 +694,19 @@
   text-align: center;
 }
 .ms-print-title img {
-  width: 15mm;
-  height: 15mm;
+  width: 14mm;
+  height: 14mm;
 }
 .ms-print-title h1 {
   margin: 0;
-  font-size: 15pt;
+  font-size: 14.5pt;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.35;
+  color: #1f3864;
 }
 .ms-print-title p {
   margin: 0;
-  font-size: 10.5pt;
+  font-size: 10pt;
   font-weight: 600;
   color: #0b5a3a;
 }
@@ -667,50 +714,43 @@
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 1mm 7mm;
-  margin: 1.6mm 0 2mm;
-  font-size: 8.5pt;
-  color: #222;
-}
-.ms-print .ms-st-muted,
-.ms-print tr.ms-inactive > td {
-  color: #555;
-}
-.ms-print .ms-r2-tag,
-.ms-print sup.ms-mark-r2 {
-  color: #7a5a10;
-}
-.ms-print tr {
-  break-inside: avoid;
-}
-.ms-legend-print {
-  margin-top: 5pt;
+  gap: 1mm 6mm;
+  margin: 1.4mm 0 1.8mm;
   font-size: 8pt;
   color: #222;
-  gap: 2pt 12pt;
+}
+.ms-legend-print {
+  margin-top: 4pt;
+  font-size: 7.6pt;
+  color: #222;
+  gap: 2pt 10pt;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
-.ms-legend-print b {
+.ms-legend-print b,
+.ms-legend-print .ms-legend-formula {
   color: #000;
 }
 .ms-legend-print .ms-chip {
   border-color: #555;
 }
-.ms-legend-print .ms-chip-cw {
-  background: #cddff5;
-}
-.ms-legend-print .ms-chip-fin {
-  background: #fff;
-}
-.ms-legend-print .ms-chip-tot {
-  background: #c6e3d0;
-}
-.ms-legend-print .ms-chip-fail {
-  background: #fbd9d5;
+.ms-legend-print .ms-chip-r1 {
+  background: #f2f2f2;
 }
 .ms-legend-print .ms-chip-r2 {
-  background: #fbf0d2;
+  background: #ddebf7;
+}
+.ms-legend-print .ms-chip-final {
+  background: #fff2cc;
+}
+.ms-legend-print .ms-chip-dec {
+  background: #ffd966;
+}
+.ms-legend-print .ms-chip-carry {
+  background: #f8cbad;
+}
+.ms-legend-print .ms-chip-fail {
+  background: #fce4e1;
 }
 
 /* ===== نتيجة الامتحانات النهائية: ورقة A4 أفقية فيها نتيجتان ===== */
@@ -1214,16 +1254,16 @@
 /* الماستر شيت: A3 أفقية (الأوضح) أو A4 أفقية، مع ترقيم الصفحات حيث يدعمه المتصفح */
 @page ms-a3 {
   size: A3 landscape;
-  margin: 9mm 8mm 11mm;
+  margin: 5mm 5mm 7mm;
   @bottom-center {
     content: 'صفحة ' counter(page) ' من ' counter(pages);
-    font-size: 8pt;
+    font-size: 7pt;
     color: #555;
   }
 }
 @page ms-a4 {
   size: A4 landscape;
-  margin: 8mm 7mm 10mm;
+  margin: 5mm 5mm 7mm;
   @bottom-center {
     content: 'صفحة ' counter(page) ' من ' counter(pages);
     font-size: 7.5pt;

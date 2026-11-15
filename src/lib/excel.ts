@@ -3,7 +3,6 @@ import type * as ExcelJS from 'exceljs'
 import type { ClassResults } from '../app/results'
 import { componentsOf, type RowResult, type SheetStats } from './calc'
 import { SHIFT_LONG, SPECIAL_LABEL, TERM_LABEL, stageShort } from './labels'
-import { unitsLabel } from './format'
 import type { GradeValues, Settings, Student, Subject } from './types'
 
 const GREEN = 'FF0B5A3A'
@@ -240,99 +239,210 @@ export interface MasterExport {
   subjectSheets?: SubjectExport[]
 }
 
+const MS_FILL = {
+  navy: 'FF1F3864',
+  subjA: 'FFD9E2F3',
+  subjB: 'FFE2EFDA',
+  r1: 'FFF2F2F2',
+  r2: 'FFDDEBF7',
+  finalHead: 'FFFFF2CC',
+  final: 'FFFFFBEA',
+  decision: 'FFFFD966',
+  carried: 'FFF8CBAD',
+  fail: 'FFFCE4E1',
+  zebra: 'FFFAFAFA',
+  sum: 'FFF0EFEA',
+  avg: 'FFF6EBCB',
+}
+const solid = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } })
+
+function msHead(c: ExcelJS.Cell, text: string, fill: string, opts: { rotate?: boolean; size?: number } = {}) {
+  c.value = text
+  c.font = { bold: true, size: opts.size ?? 10, color: { argb: 'FF000000' } }
+  c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true, textRotation: opts.rotate ? 90 : undefined }
+  c.fill = solid(fill)
+  c.border = box
+}
+
+/** الماستر شيت في Excel بترتيب سجل درجات برنامج اللجنة (A3 أفقي بحواف ضيقة، وتتكرر العناوين في كل صفحة) */
 export async function exportMasterXlsx(e: MasterExport) {
+  const { masterCell, masterGroups, masterTotals, groupUnits, totalsCaption } = await import('../app/masterLayout')
   const wb = await workbook()
   const used = new Set<string>()
-  const ws = newSheet(wb, safeSheetName('الماستر شيت', used), true)
+  const ws = wb.addWorksheet(safeSheetName('الماستر شيت', used), {
+    views: [{ rightToLeft: true, state: 'frozen', xSplit: 2, ySplit: 7 }],
+    pageSetup: {
+      paperSize: 8 as unknown as ExcelJS.PaperSize, // A3 (غير معرّف في أنواع المكتبة)
+      orientation: 'landscape',
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      horizontalCentered: true,
+      printTitlesRow: '5:7',
+      margins: { left: 0.2, right: 0.2, top: 0.25, bottom: 0.3, header: 0.1, footer: 0.12 },
+    },
+    headerFooter: { oddFooter: '&Cصفحة &P من &N' },
+  })
   const { subjects, rows, subjectStats } = e.data
-  const per = e.compact ? 1 : 3
-  const n = subjects.length
+  const groups = masterGroups(subjects, rows, e.compact)
+  const caption = totalsCaption(e.settings)
   const first = 3
-  const after = first + n * per
-  const cols = after + 3 // مجموع، معدل، النتيجة، ملاحظات (بعد آخر عمود مواد)
-  ws.columns = [{ width: 5 }, { width: 30 }, ...Array.from({ length: n * per }, () => ({ width: e.compact ? 11 : 7 })), { width: 10 }, { width: 9 }, { width: 26 }, { width: 18 }]
-  ws.views = [{ rightToLeft: true, state: 'frozen', xSplit: 2, ySplit: 7 }]
-  titleRow(ws, 1, cols + 1, `${e.settings.university_name} — ${e.settings.college_name}`)
-  titleRow(ws, 2, cols + 1, `قسم ${e.deptName}`, 12, LIGHT, GREEN)
-  titleRow(ws, 3, cols + 1, `الماستر شيت لدرجات الطلبة — المرحلة ${stageShort(e.stage)} / ${e.termLabel}`, 12, LIGHT, 'FF000000')
-  infoRow(ws, 4, cols + 1, [
-    ['نوع الدراسة', SHIFT_LONG[e.shift]],
-    ['العام الدراسي', e.yearLabel],
-    ['عدد المواد', String(n)],
-  ])
-  ws.mergeCells(6, 1, 7, 1)
-  headerCell(ws.getCell(6, 1), 'ت')
-  ws.mergeCells(6, 2, 7, 2)
-  headerCell(ws.getCell(6, 2), 'اسم الطالب')
-  subjects.forEach((x, j) => {
-    const c = first + j * per
-    if (per > 1) ws.mergeCells(6, c, 6, c + per - 1)
-    headerCell(ws.getCell(6, c), `${x.name}${x.units ? ` (${unitsLabel(x.units)})` : ''}`)
-    if (per > 1) {
-      headerCell(ws.getCell(7, c), `سعي\n(${x.coursework_max})`)
-      headerCell(ws.getCell(7, c + 1), `نهائي\n(${x.final_max + x.practical_max})`)
-      headerCell(ws.getCell(7, c + 2), 'المجموع')
-    } else headerCell(ws.getCell(7, c), 'الدرجة')
-  })
-  ;['مجموع الدرجات', 'المعدل', 'النتيجة', 'الملاحظات'].forEach((t, i) => {
-    ws.mergeCells(6, after + i, 7, after + i)
-    headerCell(ws.getCell(6, after + i), t)
-  })
-  ws.getRow(6).height = 42
-  ws.getRow(7).height = 30
+  const starts: number[] = []
+  let c0 = first
+  for (const g of groups) {
+    starts.push(c0)
+    c0 += g.cols.length
+  }
+  const after = c0
+  const lastCol = after + 4 // مجموع الدرجات، المعدل، الترتيب، النتيجة، الملاحظات
+  ws.columns = [
+    { width: 5 },
+    { width: 30 },
+    ...groups.flatMap((g) => g.cols.map((c) => ({ width: e.compact ? 9 : c.kind === 'final' ? 8 : 6.5 }))),
+    { width: 10 },
+    { width: 9 },
+    { width: 6 },
+    { width: 24 },
+    { width: 20 },
+  ]
 
+  titleRow(ws, 1, lastCol, `${e.settings.university_name} — ${e.settings.college_name}`, 15, MS_FILL.navy)
+  titleRow(ws, 2, lastCol, `قسم ${e.deptName}  |  المرحلة ${stageShort(e.stage)}  |  ${SHIFT_LONG[e.shift]}  |  ${e.termLabel}  |  العام الدراسي ${e.yearLabel}`, 12, LIGHT, 'FF000000')
+  titleRow(ws, 3, lastCol, 'الماستر شيت لدرجات الطلبة', 13, 'FFFFFFFF', MS_FILL.navy)
+
+  // العناوين: المادة ← الدور الأول / الثاني / الدرجة النهائية ← السعي / العملي النهائي / النظري
+  ws.mergeCells(5, 1, 7, 1)
+  msHead(ws.getCell(5, 1), 'ت', MS_FILL.r1)
+  ws.mergeCells(5, 2, 7, 2)
+  msHead(ws.getCell(5, 2), 'اسم الطالب', MS_FILL.r1)
+  groups.forEach((g, i) => {
+    const c = starts[i]
+    const fill = i % 2 ? MS_FILL.subjB : MS_FILL.subjA
+    if (e.compact) {
+      ws.mergeCells(5, c, 7, c)
+      msHead(ws.getCell(5, c), `${g.subject.name}\n(${groupUnits(g.subject)})`, fill, { rotate: true, size: 9 })
+      return
+    }
+    if (g.cols.length > 1) ws.mergeCells(5, c, 5, c + g.cols.length - 1)
+    msHead(ws.getCell(5, c), `${g.subject.name}\n(${groupUnits(g.subject)})`, fill)
+    let k = c
+    if (g.r1.length) {
+      if (g.r1.length > 1) ws.mergeCells(6, k, 6, k + g.r1.length - 1)
+      msHead(ws.getCell(6, k), 'الدور الأول', MS_FILL.r1, { size: 9 })
+      g.r1.forEach((col, x) => msHead(ws.getCell(7, k + x), `${col.label}\n(${col.max})`, MS_FILL.r1, { rotate: true, size: 9 }))
+      k += g.r1.length
+    }
+    if (g.r2.length) {
+      if (g.r2.length > 1) ws.mergeCells(6, k, 6, k + g.r2.length - 1)
+      msHead(ws.getCell(6, k), 'الدور الثاني', MS_FILL.r2, { size: 9 })
+      g.r2.forEach((col, x) => msHead(ws.getCell(7, k + x), `${col.label}\n(${col.max})`, MS_FILL.r2, { rotate: true, size: 9 }))
+      k += g.r2.length
+    }
+    ws.mergeCells(6, k, 7, k)
+    msHead(ws.getCell(6, k), 'الدرجة النهائية\n(100)', MS_FILL.finalHead, { rotate: true, size: 9 })
+  })
+  const endHeads: [string, string][] = [
+    [`مجموع الدرجات\n(${caption.total})`, MS_FILL.sum],
+    [`المعدل\n(${caption.average})`, MS_FILL.avg],
+    ['الترتيب', MS_FILL.r1],
+    ['النتيجة', MS_FILL.r1],
+    ['الملاحظات', MS_FILL.r1],
+  ]
+  endHeads.forEach(([t, fill], i) => {
+    ws.mergeCells(5, after + i, 7, after + i)
+    msHead(ws.getCell(5, after + i), t, fill, { rotate: i < 3 })
+  })
+  ws.getRow(5).height = e.compact ? 110 : 44
+  ws.getRow(6).height = e.compact ? 14 : 18
+  ws.getRow(7).height = e.compact ? 14 : 78
+
+  const TONE_FILL: Record<string, string> = { r2: MS_FILL.r2, decision: MS_FILL.decision, carried: MS_FILL.carried, fail: MS_FILL.fail }
   let r = 8
   rows.forEach((row, i) => {
     const zebra = i % 2 === 1
-    const hasR2 = !e.compact && row.results.some((x) => x.complete && x.needsR2)
-    const span = hasR2 ? 2 : 1
-    const merge = (c: number) => span > 1 && ws.mergeCells(r, c, r + 1, c)
-    merge(1)
-    bodyCell(ws.getCell(r, 1), i + 1, { zebra })
-    merge(2)
-    bodyCell(ws.getCell(r, 2), row.student.full_name, { left: true, zebra })
-    row.results.forEach((x, j) => {
-      const c = first + j * per
-      if (e.compact) {
-        bodyCell(ws.getCell(r, c), x.finalSpecial ? SPECIAL_LABEL[x.finalSpecial] : x.finalTotal, { red: x.finalTotal != null && x.finalPassed === false, zebra })
-        return
-      }
-      bodyCell(ws.getCell(r, c), x.coursework, { zebra })
-      bodyCell(ws.getCell(r, c + 1), x.special ? SPECIAL_LABEL[x.special] : x.finalSum, { zebra })
-      bodyCell(ws.getCell(r, c + 2), x.total, { bold: true, red: x.total != null && x.passed === false, zebra })
-      if (hasR2) {
-        const show = x.complete && x.needsR2
-        bodyCell(ws.getCell(r + 1, c), show ? 'د2' : '', { zebra: true })
-        bodyCell(ws.getCell(r + 1, c + 1), show ? (x.r2Special ? SPECIAL_LABEL[x.r2Special] : x.r2FinalSum) : null, { zebra: true })
-        bodyCell(ws.getCell(r + 1, c + 2), show ? x.r2Total : null, { bold: true, red: show && x.r2Total != null && x.finalPassed === false, zebra: true })
-      }
+    const base = zebra ? MS_FILL.zebra : undefined
+    const put = (col: number, v: ExcelJS.CellValue, o: { bold?: boolean; fill?: string; color?: string; left?: boolean; size?: number } = {}) => {
+      const cell = ws.getCell(r, col)
+      cell.value = v
+      cell.font = { bold: o.bold, size: o.size ?? 10.5, color: o.color ? { argb: o.color } : undefined }
+      cell.alignment = { horizontal: o.left ? 'right' : 'center', vertical: 'middle', wrapText: o.left }
+      cell.border = box
+      const f = o.fill ?? base
+      if (f) cell.fill = solid(f)
+    }
+    put(1, i + 1)
+    put(2, row.student.full_name, { bold: true, left: true })
+    groups.forEach((g, gi) => {
+      g.cols.forEach((col, x) => {
+        const cell = masterCell(g, col, row, e.compact)
+        const isFinal = col.kind === 'final'
+        const fill = cell.tone && TONE_FILL[cell.tone] ? TONE_FILL[cell.tone] : isFinal ? MS_FILL.final : undefined
+        const color = cell.tone === 'fail' || cell.tone === 'carried' ? 'FFB42318' : cell.tone === 'special' ? 'FF8A5200' : undefined
+        const v = cell.mark && cell.value != null ? `${cell.text} ${cell.mark}` : cell.value
+        put(starts[gi] + x, v, { bold: isFinal, fill, color })
+      })
     })
     const st = row.student
+    const totals = masterTotals(row.summary, e.settings)
     const resultText = st.status !== 'active' ? (st.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : row.summary.statusText
-    ;[row.summary.sum, row.summary.average, resultText, st.notes ?? ''].forEach((v, k) => {
-      merge(after + k)
-      bodyCell(ws.getCell(r, after + k), v, { bold: k < 2, left: k >= 2, red: k === 2 && row.summary.status === 'fail', zebra })
-    })
-    r += span
+    const statusColor = row.summary.status === 'fail' ? 'FFB42318' : row.summary.status === 'carry' ? 'FF8A5200' : st.status === 'active' ? 'FF0B6B3A' : 'FF555555'
+    put(after, totals.total, { bold: true, fill: MS_FILL.sum })
+    put(after + 1, totals.average, { bold: true, fill: MS_FILL.avg })
+    put(after + 2, row.rank ?? '')
+    put(after + 3, resultText, { left: true, bold: true, color: statusColor, size: 9.5 })
+    put(after + 4, st.notes ?? '', { left: true, size: 9.5 })
+    ws.getRow(r).height = 18
+    r++
   })
 
+  // إحصائيات المواد (تُدمج خلايا كل مادة)
   r += 1
-  titleRow(ws, r++, cols + 1, 'إحصائيات المواد الدراسية', 11, LIGHT, GREEN)
   const statRow = (label: string, f: (s: SheetStats) => ExcelJS.CellValue) => {
     ws.mergeCells(r, 1, r, 2)
     bodyCell(ws.getCell(r, 1), label, { bold: true })
-    subjectStats.forEach((x, j) => {
-      const c = first + j * per
-      if (per > 1) ws.mergeCells(r, c, r, c + per - 1)
-      bodyCell(ws.getCell(r, c), f(x))
+    groups.forEach((g, gi) => {
+      const c = starts[gi]
+      if (g.cols.length > 1) ws.mergeCells(r, c, r, c + g.cols.length - 1)
+      bodyCell(ws.getCell(r, c), f(subjectStats[g.index]))
     })
     r++
   }
   statRow('المعدل العام', (x) => x.avg)
+  statRow('أعلى درجة', (x) => x.max)
+  statRow('أدنى درجة', (x) => x.min)
   statRow('عدد الناجحين', (x) => x.pass)
   statRow('عدد الراسبين', (x) => x.fail)
   statRow('نسبة النجاح', (x) => (x.passRate == null ? '—' : `${(x.passRate * 100).toFixed(1)}%`))
-  signatures(ws, r + 2, cols + 1, ['مقرر القسم', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'العميد'])
+
+  // مفتاح القراءة
+  r += 1
+  const legend: [string, string | null][] = [
+    [MS_FILL.decision, 'درجة نهائية معدلة بقرار (درجات القرار) — ق'],
+    [MS_FILL.carried, 'مادة محمل بها الطالب'],
+    [MS_FILL.r2, 'درجات الدور الثاني'],
+    [MS_FILL.fail, 'درجة راسبة'],
+    ['', 'غ = غائب · ح = محروم · م = مؤجل' + (e.compact ? ' · د2 = حُسمت في الدور الثاني' : '')],
+    [
+      '',
+      e.settings.average_mode === 'weighted'
+        ? 'مجموع الدرجات = Σ (الدرجة النهائية × وحدات المادة) — المعدل = مجموع الدرجات ÷ مجموع الوحدات'
+        : 'المعدل = مجموع الدرجات ÷ عدد المواد',
+    ],
+  ]
+  for (const [fill, text] of legend) {
+    const chip = ws.getCell(r, 2)
+    if (fill) {
+      chip.fill = solid(fill)
+      chip.border = box
+    }
+    ws.mergeCells(r, 3, r, Math.min(lastCol, 3 + 14))
+    const t = ws.getCell(r, 3)
+    t.value = text
+    t.font = { size: 10, bold: !fill }
+    t.alignment = { horizontal: 'right', vertical: 'middle' }
+    r++
+  }
+  signatures(ws, r + 1, lastCol, ['مقرر القسم', 'المدقق', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'عميد الكلية'])
 
   for (const sub of e.subjectSheets ?? []) {
     writeSubjectSheet(newSheet(wb, safeSheetName(sub.subject.name, used)), sub)
