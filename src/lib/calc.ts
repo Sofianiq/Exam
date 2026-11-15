@@ -239,6 +239,8 @@ export const RANKED_STATUSES: ResultStatus[] = ['pass', 'pass_r2', 'pass_carry']
 export interface StudentSummary {
   /** مجموع الدرجات النهائية لكل المواد */
   sum: number | null
+  /** مجموع الدرجات الموزون: Σ(الدرجة النهائية × وحدات المادة)؛ المعدل الموزون = هذا المجموع ÷ الوحدات */
+  weightedSum: number | null
   /** المعدل: Σ(درجة × وحدات) ÷ Σ الوحدات، أو متوسط بسيط حسب الإعدادات */
   average: number | null
   averageLabel: string | null
@@ -279,6 +281,7 @@ export function summarizeStudent(
     if (r.finalTotal != null) nums.push({ v: r.finalTotal, u: subjects[i]?.units && subjects[i].units! > 0 ? subjects[i].units! : 1 })
   })
   const sum = nums.length ? round2(nums.reduce((a, n) => a + n.v, 0)) : null
+  const weightedSum = nums.length ? round2(nums.reduce((a, n) => a + n.v * n.u, 0)) : null
   let average: number | null = null
   let units = 0
   if (nums.length) {
@@ -321,6 +324,7 @@ export function summarizeStudent(
   }
   return {
     sum,
+    weightedSum,
     average,
     averageLabel: average != null ? gradeLabel(average, settings.grade_scale) : null,
     units,

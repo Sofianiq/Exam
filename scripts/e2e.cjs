@@ -270,13 +270,18 @@ async function main() {
   await page.waitForSelector('text=الأوائل على المرحلة')
   await page.waitForSelector('th:has-text("مجموع الدرجات")')
   await page.waitForSelector('th:has-text("المعدل")')
-  assert((await page.locator('td:has-text("د2")').count()) > 0, 'master sheet shows second-round rows')
-  // العناوين العمودية والأعمدة الملوّنة للتدقيق
-  assert((await page.locator('table.ms th.ms-subject .ms-v').first().evaluate((el) => getComputedStyle(el).writingMode)) === 'vertical-rl', 'subject names are written vertically')
-  assert((await page.locator('table.ms thead th.ms-cw').count()) === (await page.locator('table.ms thead th.ms-tot').count()), 'coursework / final / total columns per subject')
-  const tint = (sel) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).backgroundColor)
-  assert(new Set([await tint('table.ms tbody td.ms-cw'), await tint('table.ms tbody td.ms-fin'), await tint('table.ms tbody td.ms-tot')]).size === 3, 'coursework, final and total columns are tinted differently')
-  assert((await page.locator('.ms-legend').first().innerText()).includes('مفتاح القراءة'), 'reading key shown')
+  // ترتيب سجل برنامج اللجنة: لكل مادة الدور الأول ← الدور الثاني (لمن امتحن فيه) ← الدرجة النهائية
+  const msTable = page.locator('table.ms').first()
+  const nSubjects = await msTable.locator('thead th.ms-subject').count()
+  assert(nSubjects > 0 && (await msTable.locator('thead th.ms-finh').count()) === nSubjects, 'one final-grade column per subject')
+  assert((await msTable.locator('thead th.ms-round:has-text("الدور الأول")').count()) === nSubjects, 'round-1 group per subject')
+  assert((await msTable.locator('thead th:has-text("الدور الثاني")').count()) > 0 && (await msTable.locator('tbody td.ms-t-r2').count()) > 0, 'round-2 columns with tinted marks')
+  assert((await msTable.locator('thead th.ms-sub .ms-v').first().evaluate((el) => getComputedStyle(el).writingMode)) === 'vertical-rl', 'column labels are written vertically')
+  const tint = (sel) => msTable.locator(sel).first().evaluate((el) => getComputedStyle(el).backgroundColor)
+  assert(new Set([await tint('tbody td.ms-c-cw'), await tint('tbody td.ms-c-final'), await tint('tbody td.ms-t-r2')]).size === 3, 'round 1, round 2 and final grade are tinted differently')
+  assert((await msTable.locator('thead th.ms-sum').innerText()).includes('الوحدات'), 'total = grade × units')
+  const legendText = await page.locator('.ms-legend').first().innerText()
+  assert(legendText.includes('مفتاح القراءة') && legendText.includes('مجموع الوحدات'), 'reading key with the average formula')
   // الطباعة: A3 أفقية افتراضياً، ويمكن اختيار A4
   const pdfSize = async () => {
     await page.emulateMedia({ media: 'print' })
@@ -293,7 +298,7 @@ async function main() {
   assert(Math.abs(a4[0] - 842) <= 2 && Math.abs(a4[1] - 595) <= 2, `master sheet prints on A4 landscape when chosen (${a4})`)
   await page.click('button:has-text("ورق A3")')
   await shot('10-master-sheet')
-  log('master sheet: vertical subject headers, tinted coursework / final / total columns, round-2 row, reading key, A3 / A4 print')
+  log('master sheet: committee-program order (round 1 → round 2 → final), weighted total and average, reading key, A3 / A4 print')
 
   await page.locator('table a[href*="/student/"]').first().click()
   await page.waitForSelector('.slip-preview [data-result-slip]:has-text("نتيجة الامتحانات النهائية")')

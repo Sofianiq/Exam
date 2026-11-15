@@ -4,13 +4,14 @@ import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useInvalidate } from '../app/queries'
 import { useClassResults, type StudentResultRow } from '../app/results'
+import { groupTitle, groupUnits, masterCell, masterGroups, masterTotals, totalsCaption, type MsGroup, type MsTone } from '../app/masterLayout'
 import { useSession } from '../app/session'
 import { backend } from '../data'
 import { bandCounts } from '../lib/calc'
 import { displayName, fmtDate, fmtNum, fmtPct, unitsLabel, yearLabel } from '../lib/format'
 import { SHIFT_LONG, STATUS_LABEL, TERM_LABEL, stageShort } from '../lib/labels'
 import { canManageDepartment } from '../lib/perm'
-import type { ClassKey, SpecialCode, Subject, Term } from '../lib/types'
+import type { ClassKey, Settings, Subject, Term } from '../lib/types'
 import { useConfirm, useToast } from './feedback'
 import { PrintSignatures } from './PrintParts'
 import { Badge, Button, Callout, Card, CardHeader, EmptyState, LoadingBlock, Segmented, cx } from './ui'
@@ -25,9 +26,6 @@ const STATUS_CLASS: Record<string, string> = {
   incomplete: 'ms-st-muted',
   none: 'ms-st-muted',
 }
-
-/** الحالات الخاصة برمز مختصر داخل الأعمدة الضيقة (كما تُكتب عند إدخال الدرجات) */
-const SPECIAL_SHORT: Record<SpecialCode, string> = { absent: 'غ', banned: 'ح', postponed: 'م' }
 
 /** ورقة الطباعة: A3 أفقية (الأوضح) أو A4 أفقية */
 type Paper = 'a3' | 'a4'
@@ -84,6 +82,7 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
   const top = [...active].filter((r) => r.rank != null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).slice(0, 5)
   const totalUnits = subjects.reduce((a, x) => a + (x.units ?? 0), 0)
   const missingUnits = subjects.some((x) => !x.units)
+  const weighted = s.settings.average_mode === 'weighted'
 
   const editNote = async (r: StudentResultRow) => {
     const v = await confirm({
@@ -182,9 +181,9 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
               </>
             }
           />
-          <MasterLegend compact={compact} />
+          <MasterLegend compact={compact} weighted={weighted} />
           <div className="max-h-[74vh] overflow-auto scrollbar-thin">
-            <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} onNote={manage ? editNote : undefined} />
+            <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} settings={s.settings} onNote={manage ? editNote : undefined} />
           </div>
         </Card>
 
@@ -271,8 +270,8 @@ export function MasterSheet({ classKey, term }: { classKey: ClassKey; term: Term
             </span>
             <span>المعدل: {s.settings.average_mode === 'weighted' ? 'موزون بالوحدات' : 'حسابي بسيط'}</span>
           </div>
-          <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} print paper={paper} />
-          <MasterLegend compact={compact} print />
+          <MasterTable subjects={subjects} rows={rows} compact={compact} subjectStats={subjectStats} settings={s.settings} print paper={paper} />
+          <MasterLegend compact={compact} print weighted={weighted} />
           <PrintSignatures
             compact
             labels={['مقرر القسم', 'المدقق', 'رئيس القسم', 'رئيس اللجنة الامتحانية', 'عميد الكلية']}
@@ -297,48 +296,66 @@ const EMPTY_VALUES = {
 }
 
 /** مفتاح قراءة ألوان ورموز الماستر شيت (على الشاشة وفي الطباعة) */
-function MasterLegend({ compact, print }: { compact: boolean; print?: boolean }) {
+function MasterLegend({ compact, print, weighted }: { compact: boolean; print?: boolean; weighted: boolean }) {
   return (
     <div className={cx('ms-legend', print ? 'ms-legend-print' : 'border-b border-line px-5 py-2.5')}>
       <b>مفتاح القراءة:</b>
       {!compact && (
         <>
           <span>
-            <i className="ms-chip ms-chip-cw" /> السعي
+            <i className="ms-chip ms-chip-r1" /> الدور الأول
           </span>
           <span>
-            <i className="ms-chip ms-chip-fin" /> الامتحان النهائي
+            <i className="ms-chip ms-chip-r2" /> الدور الثاني
           </span>
         </>
       )}
       <span>
-        <i className="ms-chip ms-chip-tot" /> {compact ? 'الدرجة النهائية للمادة' : 'المجموع'}
+        <i className="ms-chip ms-chip-final" /> الدرجة النهائية
+      </span>
+      <span>
+        <i className="ms-chip ms-chip-dec" /> درجة نهائية معدلة بقرار (ق)
+      </span>
+      <span>
+        <i className="ms-chip ms-chip-carry" /> مادة محمل بها الطالب
       </span>
       <span>
         <i className="ms-chip ms-chip-fail" /> درجة راسبة
       </span>
-      {!compact && (
-        <span>
-          <i className="ms-chip ms-chip-r2" /> الدور الثاني (د2)
-        </span>
-      )}
-      <span>غ = غائب</span>
-      <span>ح = محروم</span>
-      <span>م = مؤجل</span>
-      <span>ق = ناجح بقرار</span>
+      {compact && <span>د2 = حُسمت في الدور الثاني</span>}
+      <span>غ = غائب · ح = محروم · م = مؤجل</span>
+      <span className="ms-legend-formula">
+        {weighted ? 'مجموع الدرجات = Σ (الدرجة النهائية × وحدات المادة) · المعدل = مجموع الدرجات ÷ مجموع الوحدات' : 'المعدل = مجموع الدرجات ÷ عدد المواد'}
+      </span>
     </div>
   )
 }
 
+const TONE_CLASS: Record<MsTone, string> = {
+  r2: 'ms-t-r2',
+  decision: 'ms-t-dec',
+  carried: 'ms-t-carry',
+  fail: 'ms-t-fail',
+  special: 'ms-t-special',
+}
+
+/** حجم خط الطباعة حسب الورقة وعدد أعمدة الدرجات حتى يتسع الجدول لعرض الصفحة */
+function printFont(paper: Paper, cols: number) {
+  if (paper === 'a3') return cols > 54 ? '6pt' : cols > 44 ? '6.6pt' : cols > 34 ? '7.3pt' : cols > 24 ? '8pt' : '8.8pt'
+  return cols > 40 ? '4.8pt' : cols > 30 ? '5.4pt' : cols > 20 ? '6.2pt' : '7.2pt'
+}
+
 /**
- * جدول الماستر شيت: أسماء المواد ووحداتها عمودية لتضييق الأعمدة، وأعمدة السعي والنهائي والمجموع
- * ملوّنة بألوان ثابتة لتسهيل التدقيق، مع فاصل سميك بين المواد وبعد كل خمسة طلبة.
+ * جدول الماستر شيت بترتيب سجل درجات برنامج اللجنة: لكل مادة الدور الأول (السعي، العملي النهائي، النظري)
+ * ثم الدور الثاني لمن امتحن فيه ثم الدرجة النهائية؛ وبعد المواد مجموع الدرجات الموزون والمعدل والترتيب
+ * والنتيجة والملاحظات. فاصل سميك بين المواد وبعد كل خمسة طلبة.
  */
 function MasterTable({
   subjects,
   rows,
   compact,
   subjectStats,
+  settings,
   print,
   paper = 'a3',
   onNote,
@@ -347,39 +364,58 @@ function MasterTable({
   rows: StudentResultRow[]
   compact: boolean
   subjectStats: ReturnType<typeof useClassResults>['subjectStats']
+  settings: Settings
   print?: boolean
   paper?: Paper
   onNote?: (r: StudentResultRow) => void
 }) {
-  const per = compact ? 1 : 3
-  const cols = subjects.length * per
-  // حجم خط الطباعة حسب الورقة وعدد أعمدة الدرجات
-  const fontSize = !print ? undefined : paper === 'a3' ? (cols > 45 ? '6.6pt' : cols > 33 ? '7.6pt' : '8.8pt') : cols > 36 ? '5.4pt' : cols > 24 ? '6.3pt' : '7.4pt'
+  const groups = masterGroups(subjects, rows, compact)
+  const cols = groups.reduce((a, g) => a + g.cols.length, 0)
+  const caption = totalsCaption(settings)
   // في النتيجة السنوية تُجمع المواد تحت عنوان فصلها
   const termGroups = compact ? [1, 2].map((t) => ({ term: t as Term, count: subjects.filter((x) => x.term === t).length })).filter((g) => g.count > 0) : []
   const grouped = termGroups.length > 1
-  const headRows = grouped || !compact ? 2 : 1
-  const startsGroup = (j: number) => !compact || j === 0 || subjects[j].term !== subjects[j - 1].term
+  const headRows = compact ? (grouped ? 2 : 1) : 3
+  const startsTerm = (j: number) => j === 0 || subjects[j].term !== subjects[j - 1].term
 
-  const subjectHead = (x: Subject, j: number) => (
-    <th key={x.id} colSpan={per} className={cx('ms-subject', startsGroup(j) && 'ms-g0')}>
-      <span className="ms-v">
-        <span className="ms-subject-name">{x.name}</span>
+  const subjectHead = (g: MsGroup) =>
+    compact ? (
+      <th key={g.subject.id} className={cx('ms-subject ms-subject-v', (!grouped || startsTerm(g.index)) && 'ms-g0')}>
+        <span className="ms-v">
+          <span className="ms-subject-name">{groupTitle(g.subject)}</span>
+          <span className="ms-subject-units">{groupUnits(g.subject)}</span>
+        </span>
+        {!print && (
+          <span className="mt-1 flex justify-center">
+            <StatusDot status={g.subject.status} />
+          </span>
+        )}
+      </th>
+    ) : (
+      <th key={g.subject.id} colSpan={g.cols.length} className={cx('ms-subject ms-g0', g.index % 2 ? 'ms-subj-b' : 'ms-subj-a')}>
+        <span className="ms-subject-name">{groupTitle(g.subject)}</span>
         <span className="ms-subject-units">
-          {unitsLabel(x.units)}
-          {x.ministerial ? ' · وزارية' : ''}
+          ({groupUnits(g.subject)})
+          {!print && (
+            <span className="ms-dot">
+              <StatusDot status={g.subject.status} />
+            </span>
+          )}
         </span>
+      </th>
+    )
+
+  const endHead = (cls: string, label: string, sub?: string) => (
+    <th rowSpan={headRows} className={cls}>
+      <span className="ms-v">
+        <span>{label}</span>
+        {sub && <small>{sub}</small>}
       </span>
-      {!print && (
-        <span className="mt-1 flex justify-center">
-          <StatusDot status={x.status} />
-        </span>
-      )}
     </th>
   )
 
   return (
-    <table className={cx('ms', print ? 'ms-print' : 'ms-screen', compact && 'ms-compact')} style={fontSize ? { fontSize } : undefined}>
+    <table className={cx('ms', print ? 'ms-print' : 'ms-screen', compact && 'ms-compact')} style={print ? { fontSize: printFont(paper, cols) } : undefined}>
       <thead>
         <tr>
           <th rowSpan={headRows} className="ms-seq">
@@ -389,21 +425,15 @@ function MasterTable({
             اسم الطالب
           </th>
           {grouped
-            ? termGroups.map((g) => (
-                <th key={g.term} colSpan={g.count} className="ms-term ms-g0">
-                  {TERM_LABEL[g.term]}
+            ? termGroups.map((t) => (
+                <th key={t.term} colSpan={t.count} className="ms-term ms-g0">
+                  {TERM_LABEL[t.term]}
                 </th>
               ))
-            : subjects.map(subjectHead)}
-          <th rowSpan={headRows} className="ms-sum ms-g0">
-            <span className="ms-v">مجموع الدرجات</span>
-          </th>
-          <th rowSpan={headRows} className="ms-avg">
-            <span className="ms-v">المعدل</span>
-          </th>
-          <th rowSpan={headRows} className="ms-rank">
-            <span className="ms-v">الترتيب</span>
-          </th>
+            : groups.map(subjectHead)}
+          {endHead('ms-sum ms-g0', 'مجموع الدرجات', caption.total)}
+          {endHead('ms-avg', 'المعدل', caption.average)}
+          {endHead('ms-rank', 'الترتيب')}
           <th rowSpan={headRows} className="ms-result">
             النتيجة
           </th>
@@ -411,23 +441,39 @@ function MasterTable({
             الملاحظات
           </th>
         </tr>
-        {grouped && <tr>{subjects.map(subjectHead)}</tr>}
+        {grouped && <tr>{groups.map(subjectHead)}</tr>}
         {!compact && (
           <tr>
-            {subjects.map((x) => (
-              <Fragment key={x.id}>
-                <th className="ms-sub ms-cw ms-g0">
-                  <span className="ms-v">السعي</span>
-                  <b>{x.coursework_max}</b>
-                </th>
-                <th className="ms-sub ms-fin">
-                  <span className="ms-v">النهائي</span>
-                  <b>{x.final_max + x.practical_max}</b>
-                </th>
-                <th className="ms-sub ms-tot">
-                  <span className="ms-v">المجموع</span>
+            {groups.map((g) => (
+              <Fragment key={g.subject.id}>
+                {g.r1.length > 0 && (
+                  <th colSpan={g.r1.length} className={cx('ms-round ms-r1h ms-g0', g.r1.length === 1 && 'ms-round-v')}>
+                    {g.r1.length === 1 ? <span className="ms-v">الدور الأول</span> : 'الدور الأول'}
+                  </th>
+                )}
+                {g.r2.length > 0 && (
+                  <th colSpan={g.r2.length} className={cx('ms-round ms-r2h', g.r2.length === 1 && 'ms-round-v')}>
+                    {g.r2.length === 1 ? <span className="ms-v">الدور الثاني</span> : 'الدور الثاني'}
+                  </th>
+                )}
+                <th rowSpan={2} className={cx('ms-sub ms-finh', g.r1.length === 0 && 'ms-g0')}>
+                  <span className="ms-v">الدرجة النهائية</span>
                   <b>100</b>
                 </th>
+              </Fragment>
+            ))}
+          </tr>
+        )}
+        {!compact && (
+          <tr>
+            {groups.map((g) => (
+              <Fragment key={g.subject.id}>
+                {[...g.r1, ...g.r2].map((c, k) => (
+                  <th key={k} className={cx('ms-sub', k < g.r1.length ? 'ms-r1h' : 'ms-r2h', k === 0 && 'ms-g0')}>
+                    <span className="ms-v">{c.label}</span>
+                    <b>{c.max}</b>
+                  </th>
+                ))}
               </Fragment>
             ))}
           </tr>
@@ -436,97 +482,48 @@ function MasterTable({
       <tbody>
         {rows.map((row, i) => {
           const inactive = row.student.status !== 'active'
-          const hasR2 = !compact && row.results.some((r) => r.complete && r.needsR2)
-          const span = hasR2 ? 2 : 1
-          const sum = row.summary
+          const totals = masterTotals(row.summary, settings)
           // فاصل سميك بعد كل خمسة طلبة لتسهيل تتبع الصفوف عند التدقيق
-          const five = (i + 1) % 5 === 0
-          const b5 = five && 'ms-b5'
           return (
-            <Fragment key={row.student.id}>
-              <tr className={cx(inactive && 'ms-inactive', five && !hasR2 && 'ms-five')}>
-                <td rowSpan={span} className={cx('ms-seq', b5)}>
-                  {i + 1}
-                </td>
-                <td rowSpan={span} className={cx('ms-name', b5)}>
-                  {print ? (
-                    row.student.full_name
-                  ) : (
-                    <Link to={`/student/${row.student.id}`} className="hover:text-primary-text hover:underline">
-                      {row.student.full_name}
-                    </Link>
-                  )}
-                </td>
-                {row.results.map((r, j) =>
-                  compact ? (
-                    <td key={j} className={cx('ms-tot', startsGroup(j) && 'ms-g0', r.finalPassed === false && r.finalTotal != null && 'ms-fail print-fail', r.finalSpecial && 'ms-special')}>
-                      {r.finalSpecial ? SPECIAL_SHORT[r.finalSpecial] : fmtNum(r.finalTotal)}
-                      {r.finalRound === 2 && <sup className="ms-mark-r2">د2</sup>}
-                      {r.byDecision && (
-                        <sup className="ms-mark-dec" title="ناجح بقرار">
-                          ق
-                        </sup>
-                      )}
-                    </td>
-                  ) : (
-                    <Fragment key={j}>
-                      <td className="ms-cw ms-g0">{fmtNum(r.coursework)}</td>
-                      <td className={cx('ms-fin', r.special && 'ms-special')}>{r.special ? SPECIAL_SHORT[r.special] : fmtNum(r.finalSum)}</td>
-                      <td className={cx('ms-tot', r.passed === false && r.total != null && 'ms-fail print-fail')}>
-                        {fmtNum(r.total)}
-                        {r.byDecision && r.finalRound === 1 && (
-                          <sup className="ms-mark-dec" title="ناجح بقرار">
-                            ق
-                          </sup>
-                        )}
-                      </td>
-                    </Fragment>
-                  ),
+            <tr key={row.student.id} className={cx(inactive && 'ms-inactive', (i + 1) % 5 === 0 && 'ms-five', i % 2 === 1 && 'ms-zebra')}>
+              <td className="ms-seq">{i + 1}</td>
+              <td className="ms-name">
+                {print ? (
+                  row.student.full_name
+                ) : (
+                  <Link to={`/student/${row.student.id}`} className="hover:text-primary-text hover:underline">
+                    {row.student.full_name}
+                  </Link>
                 )}
-                <td rowSpan={span} className={cx('ms-sum ms-g0', b5)}>
-                  {fmtNum(sum.sum)}
-                </td>
-                <td rowSpan={span} className={cx('ms-avg', b5)}>
-                  {fmtNum(sum.average)}
-                </td>
-                <td rowSpan={span} className={cx('ms-rank', b5)}>
-                  {row.rank ?? ''}
-                </td>
-                <td rowSpan={span} className={cx('ms-result', inactive ? 'ms-st-muted' : STATUS_CLASS[sum.status], b5)}>
-                  {inactive ? (row.student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : sum.statusText}
-                </td>
-                <td rowSpan={span} className={cx('ms-notes', b5)}>
-                  {onNote ? (
-                    <button className="w-full text-start hover:text-primary-text" title="تعديل الملاحظة" onClick={() => onNote(row)}>
-                      {row.student.notes || <span className="text-faint">+ ملاحظة</span>}
-                    </button>
-                  ) : (
-                    row.student.notes
-                  )}
-                </td>
-              </tr>
-              {hasR2 && (
-                <tr className={cx('ms-r2', inactive && 'ms-inactive', five && 'ms-five')}>
-                  {row.results.map((r, j) => {
-                    const show = r.complete && r.needsR2
-                    return (
-                      <Fragment key={j}>
-                        <td className="ms-g0 ms-r2-tag">{show ? 'د2' : ''}</td>
-                        <td className={cx(show && r.r2Special && 'ms-special')}>{show ? (r.r2Special ? SPECIAL_SHORT[r.r2Special] : fmtNum(r.r2FinalSum)) : ''}</td>
-                        <td className={cx('ms-r2-total', show && r.r2Total != null && r.finalPassed === false && 'ms-fail print-fail', show && r.r2Total != null && r.finalPassed === true && 'ms-ok')}>
-                          {show ? fmtNum(r.r2Total) : ''}
-                          {show && r.byDecision && r.finalRound === 2 && (
-                            <sup className="ms-mark-dec" title="ناجح بقرار">
-                              ق
-                            </sup>
-                          )}
-                        </td>
-                      </Fragment>
-                    )
-                  })}
-                </tr>
+              </td>
+              {groups.map((g) =>
+                g.cols.map((c, k) => {
+                  const cell = masterCell(g, c, row, compact)
+                  const g0 = compact ? !grouped || startsTerm(g.index) : k === 0
+                  return (
+                    <td key={`${g.subject.id}-${k}`} className={cx(`ms-c-${c.kind}`, g0 && 'ms-g0', cell.tone && TONE_CLASS[cell.tone], cell.tone === 'fail' && 'print-fail')}>
+                      {cell.text}
+                      {cell.mark && <sup className={cell.mark === 'ق' ? 'ms-mark-dec' : 'ms-mark-r2'}>{cell.mark}</sup>}
+                    </td>
+                  )
+                }),
               )}
-            </Fragment>
+              <td className="ms-sum ms-g0">{fmtNum(totals.total)}</td>
+              <td className="ms-avg">{fmtNum(totals.average)}</td>
+              <td className="ms-rank">{row.rank ?? ''}</td>
+              <td className={cx('ms-result', inactive ? 'ms-st-muted' : STATUS_CLASS[row.summary.status])}>
+                {inactive ? (row.student.status === 'withdrawn' ? 'منسحب' : 'مؤجل') : row.summary.statusText}
+              </td>
+              <td className="ms-notes">
+                {onNote ? (
+                  <button className="w-full text-start hover:text-primary-text" title="تعديل الملاحظة" onClick={() => onNote(row)}>
+                    {row.student.notes || <span className="text-faint">+ ملاحظة</span>}
+                  </button>
+                ) : (
+                  row.student.notes
+                )}
+              </td>
+            </tr>
           )
         })}
       </tbody>
@@ -543,9 +540,9 @@ function MasterTable({
             <td colSpan={2} className="ms-foot-label">
               {r.label}
             </td>
-            {subjects.map((_, j) => (
-              <td key={j} colSpan={per} className={cx(startsGroup(j) && 'ms-g0')}>
-                {r.f(j)}
+            {groups.map((g) => (
+              <td key={g.subject.id} colSpan={g.cols.length} className={cx((!compact || !grouped || startsTerm(g.index)) && 'ms-g0')}>
+                {r.f(g.index)}
               </td>
             ))}
             <td colSpan={5} className="ms-g0" />
