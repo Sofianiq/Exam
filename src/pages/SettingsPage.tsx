@@ -118,7 +118,7 @@ function GeneralSettings() {
             </Field>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="الحد الأقصى لمواد التحميل" hint="بعد الدور الثاني: الرسوب في هذا العدد أو أقل = ناجح بالتحميل (سنوياً)، وأكثر = راسب. أما قبل الدور الثاني فالرسوب في مادتين أو أكثر (في مجموع الفصلين) = راسب، وفي مادة واحدة = مكمل">
+            <Field label="الحد الأقصى لمواد التحميل" hint="الرسوب في هذا العدد أو أقل (في الفصل أو في مجموع الفصلين) = مكمل قبل الدور الثاني، وناجح بالتحميل (محمل بها) بعده؛ وأكثر منه = راسب ولو قبل الدور الثاني">
               <Input type="number" min={0} max={10} dir="ltr" className="text-center" value={form.max_failed_subjects} onChange={(e) => set('max_failed_subjects', Number(e.target.value))} />
             </Field>
             <Field label="خصم الدور الثاني (درجة)" hint="يُخصم من الناجح في الدور الثاني دون النزول عن درجة النجاح، ولا يُخصم من المؤجل بعذر">
