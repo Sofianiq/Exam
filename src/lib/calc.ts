@@ -260,16 +260,18 @@ export interface StudentSummary {
 type SummarySettings = Pick<Settings, 'pass_mark' | 'average_mode' | 'grade_scale'> & Partial<Pick<Settings, 'max_failed_subjects'>>
 
 /**
- * نتيجة الطالب في مجموعة مواد (فصل أو سنة):
+ * نتيجة الطالب في مجموعة مواد (فصل، أو الفصلين معاً للنتيجة السنوية) — القاعدة نفسها في الحالتين:
  * - ناجح (أو ناجح بقرار إذا اجتاز مادة بدرجات القرار)
- * - مكمل: رسب في مادة أو أكثر في الدور الأول وما زال الدور الثاني قائماً (مهما كان عدد المواد)
- * - بعد الدور الثاني: ناجح، أو «ناجح بالتحميل» في النتيجة السنوية إذا لم تتجاوز المواد الراسبة حد التحميل، وإلا راسب
+ * - الرسوب في مواد لا يتجاوز عددها حد التحميل (max_failed_subjects، مادتان افتراضياً):
+ *   «مكمل» ما دام الدور الثاني قائماً، و«ناجح بالتحميل» (محمل بها) بعده
+ * - الرسوب في أكثر من حد التحميل (ثلاث مواد فأكثر افتراضياً) = راسب، ولو قبل الدور الثاني
+ * المواد المؤجلة بعذر لا تُعد رسوباً قبل الدور الثاني لأن دورها الثاني يُعد دوراً أول
  */
 export function summarizeStudent(
   subjects: { name: string; units: number | null }[],
   results: RowResult[],
   settings: SummarySettings,
-  scope: 'term' | 'annual' = 'term',
+  _scope: 'term' | 'annual' = 'term',
 ): StudentSummary {
   const maxCarry = settings.max_failed_subjects ?? 2
   const nums: { v: number; u: number }[] = []
@@ -295,6 +297,8 @@ export function summarizeStudent(
   const passedCount = results.filter((r) => r.finalPassed === true).length
   const any = results.some((r) => r.complete || r.overridden)
   const passText = (fallback: string) => (byDecision.length ? 'ناجح بقرار' : fallback)
+  // الرسوب الفعلي قبل الدور الثاني: لا يُحسب المؤجل بعذر لأن دوره الثاني يُعد دوراً أول
+  const failedNow = results.filter((r) => r.complete && r.finalPassed === false && r.finalSpecial !== 'postponed').length
 
   let status: ResultStatus = 'none'
   let statusText = ''
@@ -305,10 +309,10 @@ export function summarizeStudent(
   } else if (finalFailed.length === 0) {
     status = r1Failed.length === 0 ? 'pass' : 'pass_r2'
     statusText = passText(r1Failed.length === 0 ? 'ناجح' : 'ناجح (الدور الثاني)')
-  } else if (pendingR2.length > 0) {
+  } else if (pendingR2.length > 0 && failedNow <= maxCarry) {
     status = 'carry'
     statusText = `مكمل في: ${finalFailed.join('، ')}`
-  } else if (scope === 'annual' && finalFailed.length <= maxCarry) {
+  } else if (pendingR2.length === 0 && finalFailed.length <= maxCarry) {
     status = 'pass_carry'
     statusText = `ناجح بالتحميل (${finalFailed.join('، ')})`
   } else {

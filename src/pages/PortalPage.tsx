@@ -177,32 +177,54 @@ function Portal() {
     }
   }
 
-  const refreshStale = async () => {
+  // كل النتائج المنشورة القابلة لإعادة النشر: تُعاد حسابها بالقواعد والإعدادات الحالية (مثل حد مواد الرسوب)
+  const publishedResults = useMemo(() => {
+    if (!ov) return []
+    return ov.publications.flatMap((p) => {
+      if (p.kind !== 'results') return []
+      const c = ov.classes.find((x) => classId(x) === classId(p))
+      if (!c || (dept && c.department_id !== dept)) return []
+      const changes = ov.changes.filter((x) => classId(x) === classId(c))
+      const item = PORTAL_ITEMS.find((it) => it.term === p.term && it.kind === p.kind)
+      return item && !publishBlocker(p.kind, p.term, changes) ? [{ c, item }] : []
+    })
+  }, [ov, dept])
+
+  const republishList = async (list: { c: PortalClassInfo; item: (typeof PORTAL_ITEMS)[number] }[], mode: 'stale' | 'all') => {
     const ok = await confirm({
-      title: 'تحديث كل ما تغيّر بعد النشر',
+      title: mode === 'stale' ? 'تحديث كل ما تغيّر بعد النشر' : 'إعادة احتساب كل النتائج المنشورة',
       message: (
         <div className="space-y-2">
           <p>
-            سيُعاد نشر <b>{staleList.length}</b> {staleList.length === 1 ? 'عنصر' : 'عناصر'} عُدّلت درجاتها بعد النشر، ليرى الطلبة أحدث نسخة:
+            {mode === 'stale' ? (
+              <>
+                سيُعاد نشر <b>{list.length}</b> {list.length === 1 ? 'عنصر' : 'عناصر'} عُدّلت درجاتها بعد النشر، ليرى الطلبة أحدث نسخة:
+              </>
+            ) : (
+              <>
+                ستُعاد حساب <b>{list.length}</b> {list.length === 1 ? 'نتيجة منشورة' : 'نتائج منشورة'} بقواعد الاحتساب والإعدادات الحالية ثم تُنشر من جديد. استخدمه بعد تغيير
+                الإعدادات (مثل درجة النجاح أو حد مواد الرسوب) أو بعد تحديث النظام:
+              </>
+            )}
           </p>
           <ul className="list-disc space-y-0.5 ps-5 text-muted">
-            {staleList.slice(0, 8).map(({ c, item }) => (
+            {list.slice(0, 8).map(({ c, item }) => (
               <li key={`${classId(c)}|${item.term}|${item.kind}`}>
                 {item.label} — {title(c)}
               </li>
             ))}
-            {staleList.length > 8 && <li>و{staleList.length - 8} أخرى…</li>}
+            {list.length > 8 && <li>و{list.length - 8} أخرى…</li>}
           </ul>
         </div>
       ),
-      confirmText: 'تحديث الكل',
+      confirmText: mode === 'stale' ? 'تحديث الكل' : 'إعادة النشر',
     })
     if (!ok) return
-    setBusy('stale-all')
+    setBusy(mode === 'stale' ? 'stale-all' : 'republish-all')
     const base = `${window.location.origin}${window.location.pathname}`
     let done = 0
     try {
-      for (const { c, item } of staleList) {
+      for (const { c, item } of list) {
         const snapshots = await snapshotsFor(c, item.term, item.kind)
         await backend.portalPublish({ ...keyOf(c), term: item.term, kind: item.kind, exam_url: base, snapshots })
         done++
@@ -323,8 +345,19 @@ function Portal() {
                 </Button>
               )}
               {manage && staleList.length > 0 && (
-                <Button variant="primary" icon={<RefreshCw className="size-4" />} loading={busy === 'stale-all'} disabled={!!busy} onClick={refreshStale}>
+                <Button variant="primary" icon={<RefreshCw className="size-4" />} loading={busy === 'stale-all'} disabled={!!busy} onClick={() => republishList(staleList, 'stale')}>
                   تحديث ما تغيّر ({staleList.length})
+                </Button>
+              )}
+              {manage && publishedResults.length > 0 && (
+                <Button
+                  icon={<RefreshCw className="size-4" />}
+                  loading={busy === 'republish-all'}
+                  disabled={!!busy}
+                  title="إعادة حساب النتائج المنشورة بالقواعد والإعدادات الحالية"
+                  onClick={() => republishList(publishedResults, 'all')}
+                >
+                  إعادة احتساب المنشور ({publishedResults.length})
                 </Button>
               )}
               <Button icon={<UserPlus className="size-4" />} loading={busy === 'gen-all'} disabled={!!busy} onClick={generateAll}>

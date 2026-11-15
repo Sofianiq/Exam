@@ -144,7 +144,7 @@ describe('committee statistics', () => {
     const st = buildStatistics({ subjects, students, grades, settings, departments, scope: 0, official: true })
     const a = st.departments[0]
     const x2 = a.failing.find((f) => f.student.id === 'x2')!
-    // مادة الفصل الأول ما زالت بانتظار الدور الثاني → مكمل في النتيجة السنوية
+    // مادة الفصل الأول بانتظار الدور الثاني ومادة الفصل الثاني راسبة: مادتان في مجموع الفصلين → مكمل (لا راسب)
     expect(x2.status).toBe('carry')
     const s3 = buildStatistics({ subjects, students, grades, settings, departments, scope: 2, official: true }).departments[0].subjects[0]
     expect(s3).toMatchObject({ needR2: 2, satR2: 2, passR2: 1, pass: 2, fail: 1 })

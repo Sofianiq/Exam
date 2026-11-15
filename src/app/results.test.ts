@@ -112,12 +112,29 @@ describe('result slip (labels only)', () => {
     expect(f.sections[0].rows[0]).toMatchObject({ note: 'راسب', tone: 'fail' })
   })
 
-  it('marks a student who failed up to two subjects after round 2 as ناجح بالتحميل in the annual result', () => {
+  it('marks راسب in the annual result when failing three subjects or more across both terms', () => {
+    const four = [...subs, subject('d', 'حاسوب', 2, 2)]
+    // مادتان في الفصل الأول ومادة في الثاني: كل فصل وحده «مكمل»، والنتيجة السنوية (مجموع الفصلين) «راسب»
+    const r = buildStudentReport(four, [grade('a', 10, 20), grade('b', 10, 20), grade('c', 10, 30), grade('d', 25, 50)], 'st', settings)
+    expect(r.sections.map((s) => s.summary.status)).toEqual(['carry', 'carry'])
+    expect(r.annual).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['تشريح', 'فسلجة', 'كيمياء'] })
+    const m = slipModel(student, r, 0)
+    expect(m).toMatchObject({ status: 'fail', statusText: 'راسب', failedTitle: 'المواد الراسب فيها', failed: ['تشريح', 'فسلجة', 'كيمياء'] })
+    expect(m.sections[0].rows[0]).toMatchObject({ note: 'راسب', tone: 'fail' })
+    // مادة في كل فصل (مادتان في مجموع الفصلين) = مكمل لا راسب
+    const two = buildStudentReport(four, [grade('a', 10, 20), grade('b', 20, 45), grade('c', 10, 30), grade('d', 25, 50)], 'st', settings)
+    expect(two.annual.status).toBe('carry')
+  })
+
+  it('marks a student who failed up to two subjects after round 2 as ناجح بالتحميل (in the term and in the year)', () => {
     const subsR2 = subs.map((x) => ({ ...x, r2_status: 'approved' as const }))
     const r = buildStudentReport(subsR2, [grade('a', 10, 20, { r2_final_theory: 20 }), grade('b', 20, 45), grade('c', 28, 64)], 'st', settings)
-    expect(r.sections[0].summary.status).toBe('fail')
+    expect(r.sections[0].summary).toMatchObject({ status: 'pass_carry', finalFailed: ['تشريح'] })
     expect(r.annual).toMatchObject({ status: 'pass_carry', finalFailed: ['تشريح'] })
-    expect(slipModel(student, r, 0)).toMatchObject({ status: 'pass_carry', statusText: 'ناجح بالتحميل' })
+    expect(slipModel(student, r, 0)).toMatchObject({ status: 'pass_carry', statusText: 'ناجح بالتحميل', failedTitle: 'المواد المحملة', failed: ['تشريح'] })
+    const t1 = slipModel(student, r, 1)
+    expect(t1).toMatchObject({ status: 'pass_carry', failedTitle: 'المواد المحملة' })
+    expect(t1.sections[0].rows[0]).toMatchObject({ note: 'محملة', tone: 'carry' })
   })
 
   it('marks subjects passed in the second round', () => {
