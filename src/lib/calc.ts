@@ -262,7 +262,10 @@ type SummarySettings = Pick<Settings, 'pass_mark' | 'average_mode' | 'grade_scal
 /**
  * نتيجة الطالب في مجموعة مواد (فصل أو سنة):
  * - ناجح (أو ناجح بقرار إذا اجتاز مادة بدرجات القرار)
- * - مكمل: رسب في مادة أو أكثر في الدور الأول وما زال الدور الثاني قائماً (مهما كان عدد المواد)
+ * - مكمل: رسب في الدور الأول في مواد لا يتجاوز عددها الحد الأقصى (max_failed_subjects، مادتان افتراضياً)
+ *   وما زال الدور الثاني قائماً
+ * - راسب: رسب في أكثر من الحد الأقصى (في الفصل، أو في مجموع الفصلين للنتيجة السنوية) ولو قبل الدور الثاني.
+ *   المواد المؤجلة بعذر لا تُعد رسوباً لأن دورها الثاني يُعد دوراً أول
  * - بعد الدور الثاني: ناجح، أو «ناجح بالتحميل» في النتيجة السنوية إذا لم تتجاوز المواد الراسبة حد التحميل، وإلا راسب
  */
 export function summarizeStudent(
@@ -295,6 +298,8 @@ export function summarizeStudent(
   const passedCount = results.filter((r) => r.finalPassed === true).length
   const any = results.some((r) => r.complete || r.overridden)
   const passText = (fallback: string) => (byDecision.length ? 'ناجح بقرار' : fallback)
+  // الرسوب الفعلي قبل الدور الثاني: لا يُحسب المؤجل بعذر لأن دوره الثاني يُعد دوراً أول
+  const failedNow = results.filter((r) => r.complete && r.finalPassed === false && r.finalSpecial !== 'postponed').length
 
   let status: ResultStatus = 'none'
   let statusText = ''
@@ -305,10 +310,10 @@ export function summarizeStudent(
   } else if (finalFailed.length === 0) {
     status = r1Failed.length === 0 ? 'pass' : 'pass_r2'
     statusText = passText(r1Failed.length === 0 ? 'ناجح' : 'ناجح (الدور الثاني)')
-  } else if (pendingR2.length > 0) {
+  } else if (pendingR2.length > 0 && failedNow <= maxCarry) {
     status = 'carry'
     statusText = `مكمل في: ${finalFailed.join('، ')}`
-  } else if (scope === 'annual' && finalFailed.length <= maxCarry) {
+  } else if (pendingR2.length === 0 && scope === 'annual' && finalFailed.length <= maxCarry) {
     status = 'pass_carry'
     statusText = `ناجح بالتحميل (${finalFailed.join('، ')})`
   } else {

@@ -240,11 +240,30 @@ describe('student result', () => {
     expect(s.status).toBe('carry')
     expect(s.statusText).toBe('مكمل في: المادة ب، المادة ج')
   })
-  it('keeps the student مكمل after round 1 whatever the number of failed subjects (as in the previous system)', () => {
+  it('marks راسب (not مكمل) after round 1 when failing more than the allowed number of subjects', () => {
     const four = [...subs, { name: 'المادة د', units: 1 }]
     const s = summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings)
+    expect(s).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['المادة أ', 'المادة ب', 'المادة ج'] })
+    // النتيجة السنوية تجمع رسوب الفصلين
+    expect(summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings, 'annual').status).toBe('fail')
+    // الحد قابل للضبط من الإعدادات
+    expect(summarizeStudent(four, [R(30), R(40), R(45), R(90)], { ...settings, max_failed_subjects: 3 }).status).toBe('carry')
+    // مادتان فقط = مكمل
+    expect(summarizeStudent(four, [R(30), R(40), R(70), R(90)], settings, 'annual').status).toBe('carry')
+  })
+  it('does not count subjects postponed with an excuse as failures before round 2', () => {
+    const four = [...subs, { name: 'المادة د', units: 1 }]
+    const postponed = R(null, { needsR2: true, finalPassed: false, finalSpecial: 'postponed', special: 'postponed' })
+    const s = summarizeStudent(four, [postponed, postponed, R(40), R(90)], settings, 'annual')
     expect(s.status).toBe('carry')
-    expect(s.statusText).toBe('مكمل في: المادة أ، المادة ب، المادة ج')
+    const absent = R(null, { needsR2: true, finalPassed: false, finalSpecial: 'absent', special: 'absent' })
+    expect(summarizeStudent(four, [absent, absent, R(40), R(90)], settings, 'annual').status).toBe('fail')
+  })
+  it('re-evaluates the student after round 2 even if he was راسب after round 1', () => {
+    const four = [...subs, { name: 'المادة د', units: 1 }]
+    const viaR2 = (t: number) => R(t, { needsR2: true, r2Complete: true, finalRound: 2, finalPassed: t >= 50 })
+    expect(summarizeStudent(four, [viaR2(60), viaR2(55), viaR2(40), R(90)], settings, 'annual').status).toBe('pass_carry')
+    expect(summarizeStudent(four, [viaR2(60), viaR2(55), viaR2(70), R(90)], settings, 'annual').status).toBe('pass_r2')
   })
   it('decides راسب / ناجح بالتحميل only after round 2', () => {
     const still = (t: number) => R(t, { needsR2: true, r2Complete: true, finalPassed: false })
