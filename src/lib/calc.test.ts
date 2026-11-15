@@ -235,21 +235,20 @@ describe('student result', () => {
   it('supports a simple average when configured', () => {
     expect(summarizeStudent(subs, [R(80), R(70), R(90)], { ...settings, average_mode: 'simple' }).average).toBe(80)
   })
-  it('marks مكمل with the subject names when failing up to two subjects', () => {
-    const s = summarizeStudent(subs, [R(80), R(40), R(45)], settings)
+  it('marks مكمل with the subject name when failing one subject before round 2', () => {
+    const s = summarizeStudent(subs, [R(80), R(40), R(90)], settings)
     expect(s.status).toBe('carry')
-    expect(s.statusText).toBe('مكمل في: المادة ب، المادة ج')
+    expect(s.statusText).toBe('مكمل في: المادة ب')
   })
-  it('marks راسب (not مكمل) after round 1 when failing more than the allowed number of subjects', () => {
+  it('marks راسب (not مكمل) before round 2 when failing two subjects or more', () => {
     const four = [...subs, { name: 'المادة د', units: 1 }]
-    const s = summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings)
-    expect(s).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['المادة أ', 'المادة ب', 'المادة ج'] })
-    // النتيجة السنوية تجمع رسوب الفصلين
+    const two = summarizeStudent(subs, [R(80), R(40), R(45)], settings)
+    expect(two).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['المادة ب', 'المادة ج'] })
     expect(summarizeStudent(four, [R(30), R(40), R(45), R(90)], settings, 'annual').status).toBe('fail')
-    // الحد قابل للضبط من الإعدادات
-    expect(summarizeStudent(four, [R(30), R(40), R(45), R(90)], { ...settings, max_failed_subjects: 3 }).status).toBe('carry')
-    // مادتان فقط = مكمل
-    expect(summarizeStudent(four, [R(30), R(40), R(70), R(90)], settings, 'annual').status).toBe('carry')
+    // مادة واحدة في النتيجة السنوية = مكمل
+    expect(summarizeStudent(four, [R(30), R(60), R(70), R(90)], settings, 'annual').status).toBe('carry')
+    // حد التحميل بعد الدور الثاني لا يغيّر قاعدة ما قبل الدور الثاني
+    expect(summarizeStudent(subs, [R(80), R(40), R(45)], { ...settings, max_failed_subjects: 3 }, 'annual').status).toBe('fail')
   })
   it('does not count subjects postponed with an excuse as failures before round 2', () => {
     const four = [...subs, { name: 'المادة د', units: 1 }]
@@ -257,7 +256,7 @@ describe('student result', () => {
     const s = summarizeStudent(four, [postponed, postponed, R(40), R(90)], settings, 'annual')
     expect(s.status).toBe('carry')
     const absent = R(null, { needsR2: true, finalPassed: false, finalSpecial: 'absent', special: 'absent' })
-    expect(summarizeStudent(four, [absent, absent, R(40), R(90)], settings, 'annual').status).toBe('fail')
+    expect(summarizeStudent(four, [absent, R(40), R(70), R(90)], settings, 'annual').status).toBe('fail')
   })
   it('re-evaluates the student after round 2 even if he was راسب after round 1', () => {
     const four = [...subs, { name: 'المادة د', units: 1 }]

@@ -112,14 +112,14 @@ describe('result slip (labels only)', () => {
     expect(f.sections[0].rows[0]).toMatchObject({ note: 'راسب', tone: 'fail' })
   })
 
-  it('marks راسب in the annual result when failing more than two subjects across both terms before round 2', () => {
+  it('marks راسب in the annual result when failing two subjects or more across both terms before round 2', () => {
     const four = [...subs, subject('d', 'حاسوب', 2, 2)]
-    // مادة راسبة في الفصل الأول ومادتان في الثاني: كل فصل وحده «مكمل»، والنتيجة السنوية «راسب»
-    const r = buildStudentReport(four, [grade('a', 10, 20), grade('b', 20, 45), grade('c', 10, 30), grade('d', 5, 10)], 'st', settings)
+    // مادة راسبة في كل فصل: كل فصل وحده «مكمل»، والنتيجة السنوية (مجموع الفصلين) «راسب»
+    const r = buildStudentReport(four, [grade('a', 10, 20), grade('b', 20, 45), grade('c', 10, 30), grade('d', 25, 50)], 'st', settings)
     expect(r.sections.map((s) => s.summary.status)).toEqual(['carry', 'carry'])
-    expect(r.annual).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['تشريح', 'حاسوب', 'كيمياء'] })
+    expect(r.annual).toMatchObject({ status: 'fail', statusText: 'راسب', finalFailed: ['تشريح', 'كيمياء'] })
     const m = slipModel(student, r, 0)
-    expect(m).toMatchObject({ status: 'fail', statusText: 'راسب', failedTitle: 'المواد الراسب فيها', failed: ['تشريح', 'حاسوب', 'كيمياء'] })
+    expect(m).toMatchObject({ status: 'fail', statusText: 'راسب', failedTitle: 'المواد الراسب فيها', failed: ['تشريح', 'كيمياء'] })
     expect(m.sections[0].rows[0]).toMatchObject({ note: 'راسب', tone: 'fail' })
     // نتيجة الفصل الثاني وحدها تبقى «مكمل»
     expect(slipModel(student, r, 2)).toMatchObject({ status: 'carry', failedTitle: 'المواد المكمل فيها' })
