@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users, Eye, EyeOff, Search, History, Link2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, IdCard, KeyRound, Printer, RefreshCw, Save, Send, Smartphone, Undo2, UserPlus, Users, Eye, EyeOff, Search, History, Link2, ShieldCheck } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PORTAL_ITEMS, buildPortalSnapshots, isStalePublication, portalLoginUrl, publishBlocker } from '../app/portal'
@@ -299,11 +299,16 @@ function Portal() {
         title="بوابة الطلبة"
         subtitle="تطبيق مستقل للطلبة: يرى كل طالب سعيه ونتيجته بعد أن تنشرها اللجنة من هنا فقط"
         actions={
-          ov.settings.portal_url && (
-            <a href={ov.settings.portal_url} target="_blank" rel="noreferrer">
-              <Button icon={<ExternalLink className="size-4" />}>فتح بوابة الطالب</Button>
-            </a>
-          )
+          <>
+            <Link to="/health" title="يكشف الدرجات الناقصة والأسماء المكررة قبل أن يراها الطلبة">
+              <Button icon={<ShieldCheck className="size-4" />}>فحص البيانات قبل النشر</Button>
+            </Link>
+            {ov.settings.portal_url && (
+              <a href={ov.settings.portal_url} target="_blank" rel="noreferrer">
+                <Button icon={<ExternalLink className="size-4" />}>فتح بوابة الطالب</Button>
+              </a>
+            )}
+          </>
         }
       />
 

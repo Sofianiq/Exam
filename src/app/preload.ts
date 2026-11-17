@@ -15,6 +15,7 @@ export const pages = {
   statistics: () => import('../pages/StatisticsPage'),
   portal: () => import('../pages/PortalPage'),
   verify: () => import('../pages/VerifyPage'),
+  health: () => import('../pages/HealthPage'),
 }
 
 const BY_PATH: Record<string, () => Promise<unknown>> = {
@@ -28,6 +29,7 @@ const BY_PATH: Record<string, () => Promise<unknown>> = {
   '/users': pages.users,
   '/statistics': pages.statistics,
   '/portal': pages.portal,
+  '/health': pages.health,
 }
 
 const started = new Set<string>()
