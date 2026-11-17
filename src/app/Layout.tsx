@@ -16,6 +16,7 @@ import {
   Menu,
   Moon,
   Settings as SettingsIcon,
+  ShieldCheck,
   Smartphone,
   UserSearch,
   Sun,
@@ -73,6 +74,7 @@ export function Layout() {
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/progress', label: 'تقرير الإنجاز', icon: <FileBarChart2 className="size-4.5" /> })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/statistics', label: 'إحصائيات اللجنة الامتحانية', icon: <BarChart3 className="size-4.5" /> })
   if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/portal', label: 'بوابة الطلبة', icon: <Smartphone className="size-4.5" /> })
+  if (canViewAll(profile) || profile.role === 'head') items.push({ to: '/health', label: 'فحص سلامة البيانات', icon: <ShieldCheck className="size-4.5" /> })
   if (canToggleEntry(profile)) items.push({ to: '/control', label: 'التحكم بالإدخال', icon: <Lock className="size-4.5" /> })
   if (canManageUsers(profile)) items.push({ to: '/users', label: 'المستخدمون', icon: <Users className="size-4.5" /> })
   if (canSeeAudit(profile)) items.push({ to: '/audit', label: 'سجل العمليات', icon: <History className="size-4.5" /> })

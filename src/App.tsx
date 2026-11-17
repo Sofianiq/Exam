@@ -34,6 +34,7 @@ const UsersPage = lazy(() => pages.users().then((m) => ({ default: m.UsersPage }
 const StatisticsPage = lazy(() => pages.statistics().then((m) => ({ default: m.StatisticsPage })))
 const PortalPage = lazy(() => pages.portal().then((m) => ({ default: m.PortalPage })))
 const VerifyPage = lazy(() => pages.verify().then((m) => ({ default: m.VerifyPage })))
+const HealthPage = lazy(() => pages.health().then((m) => ({ default: m.HealthPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -67,6 +68,7 @@ const router = createHashRouter([
           { path: 'progress', element: <ProgressPage /> },
           { path: 'statistics', element: <StatisticsPage /> },
           { path: 'portal', element: <PortalPage /> },
+          { path: 'health', element: <HealthPage /> },
           { path: 'control', element: <ControlPage /> },
           { path: 'users', element: <UsersPage /> },
           { path: 'audit', element: <AuditPage /> },

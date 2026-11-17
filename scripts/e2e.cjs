@@ -451,6 +451,33 @@ async function main() {
   await shot('17-statistics')
   log('committee statistics: college + department views, per-subject rates, failing students, print and Excel')
 
+  // ===== فحص سلامة البيانات (قراءة فقط) =====
+  await page.click('aside a:has-text("فحص سلامة البيانات")')
+  await page.waitForSelector('text=ما فُحص')
+  const healthBefore = await page.locator('[data-health="dup_name"]').count()
+  // تكرار طالب في الصف نفسه يظهر خطأً مع رابط لقائمة الطلبة
+  await page.evaluate(() => {
+    const db = JSON.parse(localStorage.getItem('exam.demo.db'))
+    const st = db.students.find((x) => x.status === 'active')
+    db.students.push({ ...st, id: `${st.id}-dup`, seq: 999 })
+    localStorage.setItem('exam.demo.db', JSON.stringify(db))
+  })
+  await page.reload()
+  await page.waitForSelector('text=ما فُحص')
+  await page.waitForSelector('[data-health="dup_name"]')
+  assert((await page.locator('[data-health="dup_name"]').count()) === healthBefore + 1, 'duplicate student reported')
+  assert((await page.locator('[data-health="dup_name"] a').first().getAttribute('href')).includes('tab=students'), 'duplicate links to the students list')
+  // إزالة التكرار
+  await page.evaluate(() => {
+    const db = JSON.parse(localStorage.getItem('exam.demo.db'))
+    db.students = db.students.filter((x) => !x.id.endsWith('-dup'))
+    localStorage.setItem('exam.demo.db', JSON.stringify(db))
+  })
+  await page.reload()
+  await page.waitForSelector('text=ما فُحص')
+  assert((await page.locator('[data-health="dup_name"]').count()) === healthBefore, 'duplicate cleared after the fix')
+  log('data health check: read-only scan with severity, explanation and a link to fix (duplicate student detected and cleared)')
+
   // ===== بوابة الطلبة: الحسابات والبطاقات والنشر =====
   await page.click('aside a:has-text("بوابة الطلبة")')
   await page.waitForSelector('text=الصفوف الدراسية')
@@ -474,7 +501,7 @@ async function main() {
   await page.emulateMedia({ media: 'screen' })
   await page.click('[role="dialog"] button:has-text("إغلاق")')
   // فحص سجلات السنوات السابقة (في الوضع التجريبي لا نواقص)
-  await page.click('button:has-text("فحص")')
+  await page.getByRole('button', { name: 'فحص', exact: true }).click()
   await page.waitForSelector('text=مربوطون بسجلات سنواتهم السابقة')
   assert((await page.locator('main').innerText()).includes('تنقصهم سجلات سنوات سابقة'), 'history check summary shown')
   // النتائج المحجوبة تُدار من بوابة الطلبة: رفع الحجب يعيدها فوراً
